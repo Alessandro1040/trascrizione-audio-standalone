@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Trascrizione Audio — file unico, senza server</title>
-<meta name="description" content="Trascrizione audio con OpenAI Whisper in un unico file HTML: nessun server, chunking automatico dei file grandi, timestamp e sottotitoli SRT." />
+<title>Trascrizione Audio — senza API o con OpenAI, in un solo file</title>
+<meta name="description" content="Trascrizione audio con Whisper in un unico file HTML: motore locale nel browser (nessuna API, nessun costo) oppure API OpenAI, con chunking automatico, timestamp e sottotitoli SRT." />
 <style>
 /* ==================================================================
    Trascrizione Audio standalone — tema nero / celeste
@@ -138,20 +138,58 @@ footer.pie a:hover { text-decoration: underline; }
     <h2>1 · Configurazione</h2>
 
     <div class="campo">
-      <label for="chiave">Chiave API OpenAI (<code>sk-…</code>)</label>
-      <input type="password" id="chiave" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+      <label for="motore">Motore di trascrizione</label>
+      <select id="motore">
+        <option value="api">OpenAI Whisper via API (serve una chiave)</option>
+        <option value="locale">Locale nel browser — nessuna API, nessun costo</option>
+      </select>
+    </div>
+    <p class="nota" id="notaMotore"></p>
+
+    <div id="gruppoApi">
+      <div class="campo">
+        <label for="chiave">Chiave API OpenAI (<code>sk-…</code>)</label>
+        <input type="password" id="chiave" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+      </div>
+
+      <div class="campo">
+        <label for="endpoint">Endpoint API (qualsiasi servizio compatibile OpenAI)</label>
+        <input type="text" id="endpoint" value="https://api.openai.com/v1" spellcheck="false" />
+      </div>
+
+      <div class="campo">
+        <label for="modello">Modello API</label>
+        <input type="text" id="modello" value="whisper-1" spellcheck="false" />
+      </div>
     </div>
 
-    <div class="campo">
-      <label for="endpoint">Endpoint API (qualsiasi servizio compatibile OpenAI)</label>
-      <input type="text" id="endpoint" value="https://api.openai.com/v1" spellcheck="false" />
+    <div id="gruppoLocale" class="hidden">
+      <div class="riga">
+        <div class="campo">
+          <label for="modelloLocale">Modello locale</label>
+          <select id="modelloLocale">
+            <option value="Xenova/whisper-tiny">whisper-tiny — ~38 MB, molto veloce</option>
+            <option value="Xenova/whisper-base">whisper-base — ~73 MB, buon compromesso</option>
+            <option value="Xenova/whisper-small">whisper-small — ~237 MB, più preciso</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="dispositivo">Elaborazione</label>
+          <select id="dispositivo">
+            <option value="auto">Automatica (WebGPU se disponibile)</option>
+            <option value="webgpu">WebGPU — più veloce</option>
+            <option value="wasm">WASM — massima compatibilità</option>
+          </select>
+        </div>
+      </div>
+      <p class="nota">
+        L'audio non lascia mai il tuo computer: la trascrizione avviene in questo browser con
+        <code>transformers.js</code>. La prima volta viene scaricato il modello (38–237 MB) e poi resta
+        in cache, quindi dopo il primo uso funziona anche <strong>offline</strong>.
+      </p>
     </div>
 
     <div class="riga">
-      <div class="campo">
-        <label for="modello">Modello</label>
-        <input type="text" id="modello" value="whisper-1" spellcheck="false" />
-      </div>
       <div class="campo">
         <label for="lingua">Lingua del parlato</label>
         <select id="lingua">
@@ -187,13 +225,17 @@ footer.pie a:hover { text-decoration: underline; }
           <option value="ms">Malese</option>
         </select>
       </div>
+      <div class="campo">
+        <label for="secondiFinestra">Finestra audio locale (s)</label>
+        <input type="number" id="secondiFinestra" value="30" min="5" max="30" step="1" />
+      </div>
     </div>
 
     <label class="checkbox"><input type="checkbox" id="timestamp" /> Includi i timestamp e abilita il download <code>.srt</code></label>
-    <label class="checkbox"><input type="checkbox" id="continuita" checked /> Usa il testo precedente per la continuità fra i segmenti</label>
-    <label class="checkbox"><input type="checkbox" id="salvaChiave" checked /> Ricorda la configurazione in questo browser</label>
+    <label class="checkbox" id="rigaContinuita"><input type="checkbox" id="continuita" checked /> Usa il testo precedente per la continuità fra i segmenti</label>
+    <label class="checkbox" id="rigaSalvaChiave"><input type="checkbox" id="salvaChiave" checked /> Ricorda la configurazione in questo browser</label>
 
-    <details class="avanzate">
+    <details class="avanzate" id="rigaAvanzateApi">
       <summary>Impostazioni avanzate (dimensioni dei segmenti)</summary>
       <div class="riga-3">
         <div class="campo">
@@ -218,7 +260,7 @@ footer.pie a:hover { text-decoration: underline; }
       </p>
     </details>
 
-    <p class="nota">
+    <p class="nota" id="notaPrivacyApi">
       🔒 La chiave resta <strong>solo in questo browser</strong> (in <code>localStorage</code>, se scegli di
       ricordarla) e viene inviata esclusivamente all'endpoint configurato: l'audio non passa da nessun
       server intermedio.
@@ -288,6 +330,78 @@ footer.pie a:hover { text-decoration: underline; }
 
 </main>
 
+<script type="text/js-worker" id="worker-locale">
+/* ------------------------------------------------------------------
+   Motore locale (nessuna API): gira in un Web Worker separato.
+   Riceve audio mono a 16 kHz (Float32Array) e restituisce testo e
+   timestamp generati dal modello Whisper eseguito nel browser.
+   ------------------------------------------------------------------ */
+'use strict';
+
+let trascrittore = null;
+
+const avvisa = (messaggio) => self.postMessage(messaggio);
+
+self.onmessage = async (evento) => {
+  const richiesta = evento.data || {};
+
+  try {
+    if (richiesta.tipo === 'carica') {
+      const modulo = await import(richiesta.cdn);
+      const { pipeline, env } = modulo;
+      env.allowLocalModels = false;
+      env.useBrowserCache = true;
+
+      const opzioni = {
+        dtype: richiesta.dtype || 'q8',
+        progress_callback: (avanzamento) => avvisa({
+          tipo: 'avanzamento',
+          avanzamento: {
+            file: avanzamento.file || '',
+            stato: avanzamento.status || '',
+            percento: avanzamento.status === 'progress' && avanzamento.progress
+              ? Math.round(avanzamento.progress)
+              : null,
+          },
+        }),
+      };
+      if (richiesta.dispositivo && richiesta.dispositivo !== 'auto') opzioni.device = richiesta.dispositivo;
+
+      trascrittore = await pipeline('automatic-speech-recognition', richiesta.modello, opzioni);
+      avvisa({ tipo: 'pronto', dispositivo: richiesta.dispositivo || 'auto', versione: env.version || '' });
+      return;
+    }
+
+    if (richiesta.tipo === 'trascrivi') {
+      if (!trascrittore) throw new Error('Il modello locale non è ancora stato caricato.');
+      const opzioni = { return_timestamps: true, task: 'transcribe' };
+      if (richiesta.lingua) opzioni.language = richiesta.lingua;
+
+      const risultato = await trascrittore(richiesta.audio, opzioni);
+      avvisa({
+        tipo: 'trascrizione',
+        id: richiesta.id,
+        testo: String(risultato.text || ''),
+        blocchi: (risultato.chunks || []).map((blocco) => ({
+          inizio: blocco.timestamp && Number.isFinite(blocco.timestamp[0]) ? blocco.timestamp[0] : 0,
+          fine: blocco.timestamp && Number.isFinite(blocco.timestamp[1]) ? blocco.timestamp[1] : null,
+          testo: String(blocco.text || ''),
+        })),
+      });
+      return;
+    }
+
+    throw new Error(`Richiesta non riconosciuta: ${richiesta.tipo}`);
+  } catch (errore) {
+    avvisa({
+      tipo: 'errore',
+      id: richiesta.id,
+      messaggio: (errore && errore.message) ? errore.message : String(errore),
+    });
+  }
+};
+</script>
+
 <script id="motore">
 /* ==================================================================
    Trascrizione Audio — motore standalone (nessuna dipendenza esterna)
@@ -296,7 +410,7 @@ footer.pie a:hover { text-decoration: underline; }
    ================================================================== */
 'use strict';
 
-const VERSIONE = '1.0.0';
+const VERSIONE = '1.1.0';
 const CHIAVE_STORAGE = 'trascrizioneAudioStandalone.v1';
 const FREQUENZA_TARGET = 16000;                  // Whisper lavora a 16 kHz mono
 const LIMITE_API_BYTE = 25 * 1024 * 1024;        // limite rigido dell'API OpenAI
@@ -367,6 +481,65 @@ function testoConTimestamp(segmenti) {
 
 const stimaCosto = (secondi) => Number(((secondi / 60) * COSTO_PER_MINUTO).toFixed(4));
 const pausa = (ms) => new Promise((risolvi) => setTimeout(risolvi, ms));
+
+/* ------------------------------------------------------------------ */
+/* Motore locale: costanti e funzioni pure                             */
+/* ------------------------------------------------------------------ */
+
+/** Libreria del motore locale: viene caricata al bisogno (solo in modalità locale). */
+const CDN_TRANSFORMERS = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js';
+
+/** Modelli Whisper eseguibili nel browser (ONNX quantizzati). */
+const MODELLI_LOCALI = [
+  { id: 'Xenova/whisper-tiny', etichetta: 'whisper-tiny', byte: 38 * 1024 * 1024 },
+  { id: 'Xenova/whisper-base', etichetta: 'whisper-base', byte: 73 * 1024 * 1024 },
+  { id: 'Xenova/whisper-small', etichetta: 'whisper-small', byte: 237 * 1024 * 1024 },
+];
+
+/** Whisper vuole il nome della lingua per esteso. */
+const LINGUE_WHISPER = {
+  it: 'italian', en: 'english', es: 'spanish', fr: 'french', de: 'german', pt: 'portuguese',
+  nl: 'dutch', pl: 'polish', sv: 'swedish', da: 'danish', no: 'norwegian', fi: 'finnish',
+  ru: 'russian', uk: 'ukrainian', ro: 'romanian', cs: 'czech', hu: 'hungarian', el: 'greek',
+  tr: 'turkish', ar: 'arabic', he: 'hebrew', hi: 'hindi', ja: 'japanese', ko: 'korean',
+  zh: 'chinese', th: 'thai', vi: 'vietnamese', id: 'indonesian', ms: 'malay',
+};
+
+const FINESTRA_LOCALE_S = 30;   // Whisper elabora al massimo 30 secondi per volta
+
+const nomeLinguaWhisper = (codice) => (codice && codice !== 'auto' ? LINGUE_WHISPER[codice] || null : null);
+
+/** Converte PCM 16 bit in Float32 nell'intervallo [-1, 1]. */
+function float32DaInt16(campioni) {
+  const uscita = new Float32Array(campioni.length);
+  for (let i = 0; i < campioni.length; i += 1) uscita[i] = campioni[i] / 32768;
+  return uscita;
+}
+
+/** Divide i campioni in finestre da al massimo 30 secondi (Whisper). */
+function finestreAudio(campioni, frequenza = FREQUENZA_TARGET, secondiFinestra = FINESTRA_LOCALE_S) {
+  const secondi = Math.max(5, Math.min(FINESTRA_LOCALE_S, Number(secondiFinestra) || FINESTRA_LOCALE_S));
+  const perFinestra = Math.round(frequenza * secondi);
+  const finestre = [];
+
+  for (let inizio = 0; inizio < campioni.length; inizio += perFinestra) {
+    const fine = Math.min(inizio + perFinestra, campioni.length);
+    finestre.push({
+      indice: finestre.length,
+      inizioSecondi: inizio / frequenza,
+      durataSecondi: (fine - inizio) / frequenza,
+      campioni: campioni.subarray(inizio, fine),
+    });
+  }
+
+  return finestre;
+}
+
+/** La chiave API serve solo per endpoint remoti (con un server locale no). */
+function richiedeChiave(endpoint) {
+  const indirizzo = normalizzaEndpoint(endpoint);
+  return !/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(\/|$)/i.test(indirizzo);
+}
 
 /* ------------------------------------------------------------------ */
 /* WAV: lettura, estrazione di un intervallo, scrittura                */
@@ -990,10 +1163,237 @@ async function eseguiTrascrizione(file, config, richiami = {}) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Motore locale: Whisper dentro il browser (nessuna API)               */
+/* ------------------------------------------------------------------ */
+
+let workerLocale = null;
+let modelloLocalePronto = null;
+let caricamentoModelloLocale = null;
+let lavoroLocaleInCorso = null;
+let avanzamentoModelloLocale = () => {};
+
+function scegliDispositivo(scelta) {
+  if (scelta === 'wasm' || scelta === 'webgpu') return scelta;
+  return (typeof navigator !== 'undefined' && navigator.gpu) ? 'webgpu' : 'wasm';
+}
+
+/**
+ * Crea (una sola volta) il worker che esegue il modello: il suo codice sta nel
+ * blocco <script type="text/js-worker">, così il file resta unico.
+ */
+function assicuraWorkerLocale() {
+  if (workerLocale) return workerLocale;
+
+  const sorgente = document.getElementById('worker-locale').textContent;
+  const url = URL.createObjectURL(new Blob([sorgente], { type: 'text/javascript' }));
+  workerLocale = new Worker(url);
+  URL.revokeObjectURL(url);
+
+  workerLocale.onmessage = (evento) => {
+    const messaggio = evento.data || {};
+
+    if (messaggio.tipo === 'avanzamento') {
+      avanzamentoModelloLocale(messaggio.avanzamento || {});
+      return;
+    }
+
+    if (messaggio.tipo === 'pronto') {
+      const caricamento = caricamentoModelloLocale;
+      caricamentoModelloLocale = null;
+      if (caricamento) {
+        modelloLocalePronto = caricamento.chiave;
+        caricamento.risolvi({
+          dispositivo: messaggio.dispositivo || 'auto',
+          versione: messaggio.versione || '',
+        });
+      }
+      return;
+    }
+
+    if (messaggio.tipo === 'trascrizione' || messaggio.tipo === 'errore') {
+      const lavoro = lavoroLocaleInCorso;
+      lavoroLocaleInCorso = null;
+      if (!lavoro) return;
+      if (messaggio.tipo === 'trascrizione') lavoro.risolvi(messaggio);
+      else lavoro.rifiuta(new Error(messaggio.messaggio || 'Errore del motore locale.'));
+    }
+  };
+
+  workerLocale.onerror = (evento) => {
+    const errore = new Error(
+      `Motore locale non avviato (${evento.message || 'errore sconosciuto'}). `
+      + 'Se il browser blocca i worker da file locale, apri la pagina da un indirizzo http/https (es. GitHub Pages).'
+    );
+    if (caricamentoModelloLocale) {
+      caricamentoModelloLocale.rifiuta(errore);
+      caricamentoModelloLocale = null;
+    }
+    if (lavoroLocaleInCorso) {
+      lavoroLocaleInCorso.rifiuta(errore);
+      lavoroLocaleInCorso = null;
+    }
+    workerLocale = null;
+  };
+
+  return workerLocale;
+}
+
+/** Scarica (una sola volta) e inizializza il modello locale, con avanzamento. */
+function caricaModelloLocale(config, onAvanzamento) {
+  const dispositivo = scegliDispositivo(config.dispositivo);
+  const chiave = `${config.modelloLocale}|${dispositivo}`;
+
+  if (modelloLocalePronto === chiave) return Promise.resolve({ dispositivo });
+
+  if (caricamentoModelloLocale) return caricamentoModelloLocale.promessa;
+
+  const stato = { chiave };
+  stato.promessa = new Promise((risolvi, rifiuta) => {
+    stato.risolvi = risolvi;
+    stato.rifiuta = rifiuta;
+  });
+  caricamentoModelloLocale = stato;
+  avanzamentoModelloLocale = typeof onAvanzamento === 'function' ? onAvanzamento : () => {};
+
+  assicuraWorkerLocale().postMessage({
+    tipo: 'carica',
+    modello: config.modelloLocale,
+    dispositivo,
+    cdn: config.cdnTransformers || CDN_TRANSFORMERS,
+    dtype: dispositivo === 'webgpu' ? 'q4' : 'q8',
+  });
+
+  return stato.promessa;
+}
+
+/** Invia una finestra audio (≤30 s) al worker e attende il risultato. */
+function trascriviFinestraLocale(audioFloat32, config) {
+  return new Promise((risolvi, rifiuta) => {
+    if (lavoroLocaleInCorso) {
+      rifiuta(new Error('Una trascrizione locale è già in corso.'));
+      return;
+    }
+    const id = `lavoro-${Date.now()}-${Math.round(Math.random() * 1000000)}`;
+    lavoroLocaleInCorso = { id, risolvi, rifiuta };
+    assicuraWorkerLocale().postMessage({
+      tipo: 'trascrivi',
+      id,
+      audio: audioFloat32,
+      lingua: nomeLinguaWhisper(config.lingua),
+    }, [audioFloat32.buffer]);
+  });
+}
+
+/** Legge il file e lo converte in PCM mono a 16 kHz per il modello locale. */
+async function preparaAudioLocale(file) {
+  const buffer = await file.arrayBuffer();
+  const wav = analizzaWav(buffer);
+  if (wav) {
+    return { campioni: estraiMono16Wav(wav, 0, wav.durata), durata: wav.durata, origine: 'wav' };
+  }
+  const pcm = await decodificaPcm16(buffer);
+  return { campioni: pcm.campioni, durata: pcm.durata, origine: 'decodifica' };
+}
+
+/**
+ * Trascrizione completa con motore locale: nessuna chiave API, nessun server,
+ * nessun costo. L'audio non lascia il browser.
+ */
+async function eseguiTrascrizioneLocale(file, config, richiami = {}) {
+  const segnala = richiami.onProgresso || (() => {});
+
+  segnala({ fase: 'preparazione', percento: 1, messaggio: "Lettura e conversione dell'audio…" });
+  const audio = await preparaAudioLocale(file);
+
+  segnala({ fase: 'modello', percento: 3, messaggio: 'Preparazione del motore locale…' });
+  const dispositivo = await caricaModelloLocale(config, (avanzamento) => {
+    const nome = avanzamento.file ? avanzamento.file.split('/').pop() : 'modello';
+    segnala({
+      fase: 'modello',
+      percento: Math.round((avanzamento.percento || 0) * 0.12),
+      messaggio: avanzamento.percento === null
+        ? `Preparazione del motore locale: ${nome}…`
+        : `Download del modello: ${nome} ${avanzamento.percento}%`,
+    });
+  });
+
+  const finestre = finestreAudio(audio.campioni, FREQUENZA_TARGET, config.secondiFinestra);
+  if (finestre.length === 0) throw new Error('Il file non contiene audio da trascrivere.');
+
+  const testi = [];
+  const segmenti = [];
+  let secondiImpiegati = 0;
+
+  for (const finestra of finestre) {
+    const inizio = performance.now();
+    segnala({
+      fase: 'trascrizione',
+      percento: 15 + Math.round((finestra.indice / finestre.length) * 80),
+      totale: finestre.length,
+      completati: finestra.indice,
+      messaggio: `Elaborazione della finestra ${finestra.indice + 1} di ${finestre.length} (da ${formattaBreve(finestra.inizioSecondi)})…`,
+    });
+
+    const risultato = await trascriviFinestraLocale(float32DaInt16(finestra.campioni), config);
+    const testo = String(risultato.testo || '').trim();
+    if (testo) testi.push(testo);
+
+    for (const blocco of risultato.blocchi || []) {
+      const contenuto = String(blocco.testo || '').trim();
+      if (!contenuto) continue;
+      const da = Number(blocco.inizio || 0);
+      const a = blocco.fine === null || blocco.fine === undefined ? da : Number(blocco.fine);
+      segmenti.push({
+        inizio: finestra.inizioSecondi + da,
+        fine: finestra.inizioSecondi + a,
+        testo: contenuto,
+      });
+    }
+
+    const durata = (performance.now() - inizio) / 1000;
+    secondiImpiegati += durata;
+    const rimanenti = Math.max(0, finestre.length - finestra.indice - 1);
+    segnala({
+      fase: 'trascrizione',
+      percento: 15 + Math.round(((finestra.indice + 1) / finestre.length) * 80),
+      totale: finestre.length,
+      completati: finestra.indice + 1,
+      secondiSegmento: Number(durata.toFixed(1)),
+      secondiStimati: Math.round((secondiImpiegati / (finestra.indice + 1)) * rimanenti),
+      messaggio: `Finestra ${finestra.indice + 1} di ${finestre.length} completata in ${durata.toFixed(1)} s`,
+    });
+  }
+
+  return {
+    versione: VERSIONE,
+    motore: 'locale',
+    strategia: 'locale',
+    dispositivo: dispositivo.dispositivo,
+    durata: audio.durata,
+    durataSegmento: audio.durata / finestre.length,
+    segmentiTotali: finestre.length,
+    testo: testi.join(' ').trim(),
+    segmenti,
+    srt: segmenti.length ? costruisciSrt(segmenti) : '',
+    timestampTesto: segmenti.length ? testoConTimestamp(segmenti) : '',
+    lingua: config.lingua === 'auto' ? 'rilevata dal modello' : config.lingua,
+    modello: config.modelloLocale,
+    costoStimato: null,
+    secondiImpiegati: Number(secondiImpiegati.toFixed(1)),
+    fileOriginale: { nome: file.name, byte: file.size },
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Configurazione persistente                                          */
 /* ------------------------------------------------------------------ */
 
+
 const CONFIG_PREDEFINITA = {
+  motore: 'api',
+  modelloLocale: 'Xenova/whisper-base',
+  dispositivo: 'auto',
+  secondiFinestra: 30,
   chiave: '',
   endpoint: 'https://api.openai.com/v1',
   modello: 'whisper-1',
@@ -1052,6 +1452,11 @@ let inCorso = false;
 function avviaApp() {
   const per = (id) => document.getElementById(id);
   const el = {
+    motore: per('motore'), notaMotore: per('notaMotore'),
+    gruppoApi: per('gruppoApi'), gruppoLocale: per('gruppoLocale'),
+    modelloLocale: per('modelloLocale'), dispositivo: per('dispositivo'), secondiFinestra: per('secondiFinestra'),
+    rigaContinuita: per('rigaContinuita'), rigaSalvaChiave: per('rigaSalvaChiave'),
+    rigaAvanzateApi: per('rigaAvanzateApi'), notaPrivacyApi: per('notaPrivacyApi'),
     chiave: per('chiave'), endpoint: per('endpoint'), modello: per('modello'), lingua: per('lingua'),
     secondiChunk: per('secondiChunk'), limiteMb: per('limiteMb'), formatoRisposta: per('formatoRisposta'),
     timestamp: per('timestamp'), continuita: per('continuita'), salvaChiave: per('salvaChiave'),
@@ -1083,6 +1488,10 @@ function avviaApp() {
   /* ---- configurazione ---- */
 
   function popolaCampi(config) {
+    el.motore.value = config.motore;
+    el.modelloLocale.value = config.modelloLocale;
+    el.dispositivo.value = config.dispositivo;
+    el.secondiFinestra.value = config.secondiFinestra;
     el.chiave.value = config.chiave;
     el.endpoint.value = config.endpoint;
     el.modello.value = config.modello;
@@ -1097,6 +1506,11 @@ function avviaApp() {
 
   function leggiCampi() {
     return {
+      motore: el.motore.value,
+      modelloLocale: el.modelloLocale.value,
+      dispositivo: el.dispositivo.value,
+      secondiFinestra: Math.max(5, Math.min(30, Number(el.secondiFinestra.value) || 30)),
+      cdnTransformers: CDN_TRANSFORMERS,
       chiave: el.chiave.value.trim(),
       endpoint: el.endpoint.value.trim(),
       modello: el.modello.value.trim() || 'whisper-1',
@@ -1110,13 +1524,51 @@ function avviaApp() {
     };
   }
 
+  /** Mostra solo i campi del motore selezionato. */
+  function aggiornaMotore() {
+    const locale = el.motore.value === 'locale';
+    el.gruppoApi.classList.toggle('hidden', locale);
+    el.gruppoLocale.classList.toggle('hidden', !locale);
+    el.rigaContinuita.classList.toggle('hidden', locale);
+    el.rigaSalvaChiave.classList.toggle('hidden', locale);
+    el.rigaAvanzateApi.classList.toggle('hidden', locale);
+    el.notaPrivacyApi.classList.toggle('hidden', locale);
+
+    el.notaMotore.textContent = locale
+      ? 'Motore locale: il modello Whisper gira dentro questo browser. Nessuna chiave API, nessun costo, nessun dato inviato.'
+      : 'Motore API: il file (o i suoi segmenti) viene inviato all\'endpoint configurato; richiede una chiave API.';
+
+    if (fileCorrente) {
+      const estensione = (fileCorrente.name.split('.').pop() || '').toLowerCase();
+      aggiornaAvvisoFile(fileCorrente, estensione);
+    }
+  }
+
+  el.motore.addEventListener('change', aggiornaMotore);
   popolaCampi(leggiConfig());
+  aggiornaMotore();
 
   /* ---- selezione del file ---- */
 
   function aggiornaAvvisoFile(file, estensione) {
-    const byteMax = leggiCampi().limiteMb * 1024 * 1024;
+    const config = leggiCampi();
     let nota;
+
+    if (config.motore === 'locale') {
+      const modello = MODELLI_LOCALI.find((m) => m.id === config.modelloLocale);
+      nota = `Motore locale (${modello ? modello.etichetta : config.modelloLocale}): l'audio resta in questo `
+        + 'browser, nessun limite di 25 MB e nessun costo. '
+        + `Alla prima esecuzione viene scaricato il modello (${formattaDimensione(modello ? modello.byte : 0)}).`;
+      if (!/\.(wav|mp3)$/i.test(file.name)) {
+        nota += ' Per file molto lunghi in formati compressi (m4a, mp4…) la decodifica richiede molta memoria:'
+          + ' se il browser rallenta, converti prima in WAV o MP3.';
+      }
+      el.avvisoFile.textContent = nota;
+      el.avvisoFile.classList.remove('hidden');
+      return;
+    }
+
+    const byteMax = config.limiteMb * 1024 * 1024;
 
     if (file.size <= byteMax) {
       nota = 'File entro il limite di 25 MB: verrà inviato in un\'unica richiesta.';
@@ -1216,7 +1668,11 @@ function avviaApp() {
 
     const meta = [];
     if (risultato.durata) meta.push(`durata ${formattaDurata(risultato.durata)}`);
-    meta.push(`strategia: ${risultato.strategia}`);
+    if (risultato.motore === 'locale') {
+      meta.push(`motore locale (${risultato.dispositivo})`);
+    } else {
+      meta.push(`strategia: ${risultato.strategia}`);
+    }
     meta.push(`${risultato.segmentiTotali} segment${risultato.segmentiTotali === 1 ? 'o' : 'i'}`);
     meta.push(`lingua ${String(risultato.lingua).toUpperCase()}`);
     meta.push(`modello ${risultato.modello}`);
@@ -1236,8 +1692,11 @@ function avviaApp() {
     const config = leggiCampi();
     salvaConfig(config);
 
-    if (!config.chiave) {
-      mostraErrore('Inserisci la tua chiave API nel campo "Chiave API OpenAI" (oppure quella dell\'endpoint che usi).');
+    const serveChiave = config.motore === 'api' && richiedeChiave(config.endpoint);
+    if (serveChiave && !config.chiave) {
+      mostraErrore('Inserisci la tua chiave API nel campo "Chiave API OpenAI". '
+        + 'Con un server locale (es. http://localhost:8090/v1) la chiave non serve: '
+        + 'puoi usare il motore "Locale nel browser" oppure puntare l\'endpoint al tuo server.');
       return;
     }
 
@@ -1255,7 +1714,8 @@ function avviaApp() {
     el.progresso.classList.remove('hidden');
 
     try {
-      const risultato = await eseguiTrascrizione(fileCorrente, config, {
+      const esegui = config.motore === 'locale' ? eseguiTrascrizioneLocale : eseguiTrascrizione;
+      const risultato = await esegui(fileCorrente, config, {
         onProgresso: aggiornaProgresso,
         signal: annullatore.signal,
       });
@@ -1364,6 +1824,18 @@ window.TrascrizioneAudio = {
   normalizzaEndpoint,
   leggiConfig,
   salvaConfig,
+  // motore locale (nessuna API)
+  MODELLI_LOCALI,
+  LINGUE_WHISPER,
+  FINESTRA_LOCALE_S,
+  CDN_TRANSFORMERS,
+  nomeLinguaWhisper,
+  float32DaInt16,
+  finestreAudio,
+  richiedeChiave,
+  scegliDispositivo,
+  preparaAudioLocale,
+  eseguiTrascrizioneLocale,
 };
 
 /* Avvio dell'interfaccia: nei test Node (senza DOM) questa parte non gira. */

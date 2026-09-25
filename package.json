@@ -7,9 +7,11 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node test/unit.js && node test/browser.js",
+    "test": "node test/unit.js && node test/browser.js && node test/locale-server.js",
     "test:unit": "node test/unit.js",
-    "test:browser": "node test/browser.js"
+    "test:browser": "node test/browser.js",
+    "test:locale-server": "node test/locale-server.js",
+    "start:locale": "node server-locale.js"
   },
   "keywords": [
     "trascrizione",

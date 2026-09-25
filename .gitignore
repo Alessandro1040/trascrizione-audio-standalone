@@ -3,6 +3,11 @@ node_modules/
 
 # File generati dai test
 test/tmp/
+test/tmp-locale/
+
+# Modelli ggml di whisper.cpp (grandi: si scaricano automaticamente)
+modelli/
+*.bin
 
 # Sistema operativo / editor
 .DS_Store

@@ -479,6 +479,65 @@ async function testPipeline(sandbox, M) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 6) Motore locale: funzioni pure e struttura del file                */
+/* ------------------------------------------------------------------ */
+
+function testMotoreLocale(M) {
+  console.log('\n6) Motore locale: conversioni e finestre');
+
+  const float = M.float32DaInt16(new Int16Array([32767, -32768, 0, 16384]));
+  verificaVicino('conversione a Float32 (massimo)', float[0], 0.99997, 0.0001);
+  verificaUguale('conversione a Float32 (minimo)', float[1], -1);
+  verificaUguale('conversione a Float32 (silenzio)', float[2], 0);
+  verificaVicino('conversione a Float32 (metà)', float[3], 0.5, 0.0001);
+
+  const campioni = new Int16Array(M.FREQUENZA_TARGET * 65);   // 65 secondi
+  const finestre = M.finestreAudio(campioni, M.FREQUENZA_TARGET, 30);
+  verificaUguale('finestre da 30 s (65 s → 3 finestre)', finestre.length, 3);
+  verificaUguale('inizio della prima finestra', finestre[0].inizioSecondi, 0);
+  verificaUguale('inizio della seconda finestra', finestre[1].inizioSecondi, 30);
+  verificaVicino('durata della prima finestra', finestre[0].durataSecondi, 30, 0.0001);
+  verificaVicino('durata dell\'ultima finestra', finestre[2].durataSecondi, 5, 0.0001);
+  verifica('finestre indicizzate', finestre.every((f, i) => f.indice === i));
+
+  verificaUguale('finestra minima 5 s', M.finestreAudio(campioni, M.FREQUENZA_TARGET, 1)[1].inizioSecondi, 5);
+  verificaUguale('finestra massima 30 s', M.finestreAudio(campioni, M.FREQUENZA_TARGET, 90)[1].inizioSecondi, 30);
+
+  verificaUguale('nome lingua per Whisper', M.nomeLinguaWhisper('it'), 'italian');
+  verificaUguale('lingua automatica non forzata', M.nomeLinguaWhisper('auto'), null);
+  verificaUguale('lingua sconosciuta ignorata', M.nomeLinguaWhisper('xx'), null);
+
+  verifica('endpoint remoto richiede la chiave', M.richiedeChiave('https://api.openai.com/v1') === true);
+  verifica('server locale non richiede la chiave', M.richiedeChiave('http://localhost:8090/v1') === false);
+  verifica('127.0.0.1 non richiede la chiave', M.richiedeChiave('http://127.0.0.1:8090/v1') === false);
+  verifica('indirizzo di rete richiede la chiave', M.richiedeChiave('http://192.168.1.5:8090/v1') === true);
+
+  verificaUguale('dispositivo esplicito rispettato', M.scegliDispositivo('wasm'), 'wasm');
+  verificaUguale('auto senza WebGPU ricade su WASM', M.scegliDispositivo('auto'), 'wasm');
+
+  verificaUguale('tre modelli locali disponibili', M.MODELLI_LOCALI.length, 3);
+  verifica('modelli con dimensione dichiarata', M.MODELLI_LOCALI.every((m) => m.byte > 0 && m.id.startsWith('Xenova/')));
+  verificaUguale('lingua italiana mappata', M.LINGUE_WHISPER.it, 'italian');
+}
+
+function testStruttura() {
+  console.log('\n7) Struttura del file unico');
+
+  const html = fs.readFileSync(path.join(RADICE, 'index.html'), 'utf8');
+  verifica('blocco del motore presente', /<script id="motore">/.test(html));
+  verifica('blocco del worker presente', /<script type="text\/js-worker" id="worker-locale">/.test(html));
+  verifica('il worker usa transformers.js', /automatic-speech-recognition/.test(html));
+  verifica('nessuno script esterno caricato', !/<script[^>]+src=/.test(html));
+  verifica('nessun foglio di stile esterno', !/<link[^>]+href="http/.test(html));
+  verifica('nessuna risorsa remota obbligatoria', !/cdn\.jsdelivr[^"']*\.css/.test(html));
+  verifica(
+    'dimensione del file contenuta',
+    Buffer.byteLength(html) < 90 * 1024,
+    `${Math.round(Buffer.byteLength(html) / 1024)} KB`
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Esecuzione                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -500,6 +559,8 @@ async function testPipeline(sandbox, M) {
   testMp3(M);
   testPianificazione(M);
   await testPipeline(sandbox, M);
+  testMotoreLocale(M);
+  testStruttura();
 
   console.log(`\n=== Risultato: ${superati} verifiche superate, ${falliti} fallite ===`);
   process.exit(falliti === 0 ? 0 : 1);
