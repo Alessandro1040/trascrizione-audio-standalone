@@ -1,0 +1,1387 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Trascrizione Audio — file unico, senza server</title>
+<meta name="description" content="Trascrizione audio con OpenAI Whisper in un unico file HTML: nessun server, chunking automatico dei file grandi, timestamp e sottotitoli SRT." />
+<style>
+/* ==================================================================
+   Trascrizione Audio standalone — tema nero / celeste
+   ================================================================== */
+:root {
+  --nero: #0a0a0f;
+  --card: #12121a;
+  --input: #1a1a2e;
+  --celeste: #00b4d8;
+  --celeste-chiaro: #90e0ef;
+  --celeste-scuro: #0077b6;
+  --grigio: #8892b0;
+  --chiaro: #ccd6f6;
+  --verde: #00e676;
+  --rosso: #ff5252;
+  --giallo: #ffd166;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--nero);
+  background-image: radial-gradient(circle at 15% 0%, rgba(0,180,216,.10), transparent 45%);
+  color: var(--chiaro);
+  min-height: 100vh;
+  padding: 2rem 1.25rem 3rem;
+}
+.contenitore { max-width: 860px; margin: 0 auto; }
+header.testa { text-align: center; margin-bottom: 2rem; }
+h1 { font-size: 2.2rem; color: #fff; letter-spacing: -.02em; }
+h1 .accento { color: var(--celeste); }
+.sottotitolo { color: var(--grigio); margin-top: .5rem; font-size: .98rem; }
+.badge {
+  display: inline-block; margin-top: .9rem; padding: .3rem .8rem; border-radius: 999px;
+  font-size: .74rem; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--celeste-chiaro); border: 1px solid rgba(0,180,216,.35); background: rgba(0,180,216,.08);
+}
+h2 { color: var(--celeste); font-size: 1.12rem; margin-bottom: .9rem; }
+.pannello {
+  background: var(--card); border: 1px solid rgba(0,180,216,.18); border-radius: 14px;
+  padding: 1.35rem; margin-bottom: 1.25rem;
+}
+.campo { display: flex; flex-direction: column; gap: .35rem; margin-bottom: .95rem; }
+.campo label { font-size: .82rem; color: var(--grigio); }
+input[type="text"], input[type="password"], input[type="number"], select, textarea {
+  background: var(--input); color: var(--chiaro); border: 1px solid rgba(0,180,216,.22);
+  border-radius: 8px; padding: .62rem .75rem; font-size: .9rem; font-family: inherit; outline: none;
+  transition: border-color .2s;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--celeste); }
+select { cursor: pointer; }
+.riga { display: grid; grid-template-columns: 1fr 1fr; gap: .9rem; }
+.riga-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .9rem; }
+.checkbox { display: flex; align-items: center; gap: .55rem; font-size: .85rem; color: var(--grigio); cursor: pointer; margin-bottom: .6rem; }
+.checkbox input { width: 16px; height: 16px; accent-color: var(--celeste); cursor: pointer; }
+.nota { font-size: .76rem; color: var(--grigio); line-height: 1.5; margin-top: .4rem; }
+.nota code { color: var(--celeste-chiaro); font-size: .74rem; }
+details.avanzate { margin-top: .4rem; }
+details.avanzate summary { cursor: pointer; color: var(--grigio); font-size: .82rem; margin-bottom: .8rem; }
+.dropzone {
+  background: rgba(0,180,216,.03); border: 2px dashed rgba(0,180,216,.3); border-radius: 14px;
+  padding: 2.4rem 1.25rem; text-align: center; cursor: pointer; transition: all .25s;
+}
+.dropzone:hover, .dropzone.dragover { border-color: var(--celeste); background: rgba(0,180,216,.07); }
+.dropzone svg { margin-bottom: .7rem; }
+.dropzone p { font-size: 1rem; }
+.dropzone .suggerimento { color: var(--grigio); font-size: .8rem; margin: .35rem 0 .9rem; }
+.formati { color: var(--grigio); font-size: .73rem; margin-top: .9rem; }
+button {
+  font-family: inherit; font-size: .9rem; font-weight: 600; cursor: pointer;
+  border-radius: 9px; border: none; padding: .72rem 1.4rem;
+  transition: transform .15s, box-shadow .15s, background .15s, color .15s;
+}
+button:disabled { opacity: .4; cursor: not-allowed; }
+.btn-principale { background: linear-gradient(135deg, var(--celeste-scuro), var(--celeste)); color: #fff; }
+.btn-principale:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(0,180,216,.32); }
+.btn-secondario { background: var(--input); color: var(--chiaro); border: 1px solid rgba(0,180,216,.25); }
+.btn-secondario:hover:not(:disabled) { border-color: var(--celeste); color: var(--celeste); }
+.btn-pericolo { background: rgba(255,82,82,.14); color: var(--rosso); border: 1px solid rgba(255,82,82,.4); }
+.info-file {
+  display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+  background: var(--input); border: 1px solid rgba(0,180,216,.22); border-radius: 10px;
+  padding: .8rem 1rem; margin-top: 1rem;
+}
+.info-file .nome { flex: 1; color: var(--celeste-chiaro); font-size: .88rem; word-break: break-all; }
+.info-file .dettagli { color: var(--grigio); font-size: .78rem; }
+.azioni-file { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: 1rem; }
+.azioni-file button { flex: 1 1 160px; }
+.barra { height: 9px; background: var(--input); border-radius: 999px; overflow: hidden; border: 1px solid rgba(0,180,216,.2); }
+.barra span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--celeste-scuro), var(--celeste-chiaro)); transition: width .3s ease; }
+#progresso { margin-top: 1.1rem; }
+#progressoTesto { font-size: .82rem; color: var(--grigio); margin-top: .55rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+#registro {
+  margin-top: .8rem; font-size: .74rem; color: var(--grigio); line-height: 1.6;
+  max-height: 150px; overflow: auto; white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+#testo { width: 100%; min-height: 260px; line-height: 1.7; resize: vertical; font-size: .93rem; }
+#meta { font-size: .78rem; color: var(--grigio); margin-bottom: .8rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.avviso {
+  margin-top: 1rem; padding: .85rem 1rem; border-radius: 10px; font-size: .84rem; line-height: 1.55;
+  background: rgba(255,209,102,.1); border: 1px solid rgba(255,209,102,.35); color: var(--giallo);
+}
+.errore {
+  margin-top: 1.25rem; padding: .95rem 1.1rem; border-radius: 10px; font-size: .86rem; line-height: 1.55;
+  background: rgba(255,82,82,.1); border: 1px solid rgba(255,82,82,.4); color: var(--rosso); white-space: pre-wrap;
+}
+.ok { color: var(--verde); }
+footer.pie { text-align: center; color: var(--grigio); font-size: .76rem; margin-top: 2rem; line-height: 1.7; }
+footer.pie a { color: var(--celeste); text-decoration: none; }
+footer.pie a:hover { text-decoration: underline; }
+.hidden { display: none !important; }
+@media (max-width: 620px) {
+  body { padding: 1.25rem .9rem 2rem; }
+  h1 { font-size: 1.75rem; }
+  .riga, .riga-3 { grid-template-columns: 1fr; }
+}
+
+</style>
+</head>
+<body>
+<main class="contenitore">
+
+  <header class="testa">
+    <h1>Trascrizione <span class="accento">Audio</span></h1>
+    <p class="sottotitolo">Un unico file HTML: apri, incolla la chiave, trascrivi. Nessun server, nessuna installazione.</p>
+    <span class="badge">100% nel browser &middot; chunking automatico</span>
+  </header>
+
+  <!-- ============ 1. Configurazione ============ -->
+  <section class="pannello">
+    <h2>1 · Configurazione</h2>
+
+    <div class="campo">
+      <label for="chiave">Chiave API OpenAI (<code>sk-…</code>)</label>
+      <input type="password" id="chiave" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+    </div>
+
+    <div class="campo">
+      <label for="endpoint">Endpoint API (qualsiasi servizio compatibile OpenAI)</label>
+      <input type="text" id="endpoint" value="https://api.openai.com/v1" spellcheck="false" />
+    </div>
+
+    <div class="riga">
+      <div class="campo">
+        <label for="modello">Modello</label>
+        <input type="text" id="modello" value="whisper-1" spellcheck="false" />
+      </div>
+      <div class="campo">
+        <label for="lingua">Lingua del parlato</label>
+        <select id="lingua">
+          <option value="auto">Rilevamento automatico</option>
+          <option value="it">Italiano</option>
+          <option value="en">Inglese</option>
+          <option value="es">Spagnolo</option>
+          <option value="fr">Francese</option>
+          <option value="de">Tedesco</option>
+          <option value="pt">Portoghese</option>
+          <option value="nl">Olandese</option>
+          <option value="pl">Polacco</option>
+          <option value="sv">Svedese</option>
+          <option value="da">Danese</option>
+          <option value="no">Norvegese</option>
+          <option value="fi">Finlandese</option>
+          <option value="ru">Russo</option>
+          <option value="uk">Ucraino</option>
+          <option value="ro">Rumeno</option>
+          <option value="cs">Ceco</option>
+          <option value="hu">Ungherese</option>
+          <option value="el">Greco</option>
+          <option value="tr">Turco</option>
+          <option value="ar">Arabo</option>
+          <option value="he">Ebraico</option>
+          <option value="hi">Hindi</option>
+          <option value="ja">Giapponese</option>
+          <option value="ko">Coreano</option>
+          <option value="zh">Cinese</option>
+          <option value="th">Thailandese</option>
+          <option value="vi">Vietnamita</option>
+          <option value="id">Indonesiano</option>
+          <option value="ms">Malese</option>
+        </select>
+      </div>
+    </div>
+
+    <label class="checkbox"><input type="checkbox" id="timestamp" /> Includi i timestamp e abilita il download <code>.srt</code></label>
+    <label class="checkbox"><input type="checkbox" id="continuita" checked /> Usa il testo precedente per la continuità fra i segmenti</label>
+    <label class="checkbox"><input type="checkbox" id="salvaChiave" checked /> Ricorda la configurazione in questo browser</label>
+
+    <details class="avanzate">
+      <summary>Impostazioni avanzate (dimensioni dei segmenti)</summary>
+      <div class="riga-3">
+        <div class="campo">
+          <label for="secondiChunk">Secondi per segmento</label>
+          <input type="number" id="secondiChunk" value="600" min="20" max="1800" step="10" />
+        </div>
+        <div class="campo">
+          <label for="limiteMb">Limite MB per segmento</label>
+          <input type="number" id="limiteMb" value="20" min="0.05" max="24" step="0.05" />
+        </div>
+        <div class="campo">
+          <label for="formatoRisposta">Formato risposta</label>
+          <select id="formatoRisposta">
+            <option value="verbose">verbose_json (consigliato)</option>
+            <option value="json">json (solo testo)</option>
+          </select>
+        </div>
+      </div>
+      <p class="nota">
+        Il limite dell'API OpenAI è di <strong>25&nbsp;MB per richiesta</strong>: i file più grandi vengono
+        suddivisi automaticamente in segmenti (il testo viene poi ricomposto nell'ordine corretto).
+      </p>
+    </details>
+
+    <p class="nota">
+      🔒 La chiave resta <strong>solo in questo browser</strong> (in <code>localStorage</code>, se scegli di
+      ricordarla) e viene inviata esclusivamente all'endpoint configurato: l'audio non passa da nessun
+      server intermedio.
+    </p>
+  </section>
+
+  <!-- ============ 2. File ============ -->
+  <section class="pannello">
+    <h2>2 · File audio</h2>
+
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="fileInput" accept="audio/*,video/mp4,.mp3,.wav,.m4a,.flac,.ogg,.webm,.opus,.aac,.mp4" hidden />
+      <svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#00b4d8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="17 8 12 3 7 8" />
+        <line x1="12" y1="3" x2="12" y2="15" />
+      </svg>
+      <p>Trascina qui il file audio, incollalo con Ctrl/⌘+V</p>
+      <p class="suggerimento">oppure</p>
+      <button class="btn-principale" id="btnScegli" type="button">Scegli un file</button>
+      <p class="formati">MP3 · WAV · M4A · FLAC · OGG · OPUS · WEBM · AAC · MP4 — qualsiasi durata</p>
+    </div>
+
+    <div class="info-file hidden" id="infoFile">
+      <span class="nome" id="nomeFile"></span>
+      <span class="dettagli" id="dettagliFile"></span>
+      <button class="btn-pericolo" id="btnRimuovi" type="button">✕</button>
+    </div>
+
+    <div class="avviso hidden" id="avvisoFile"></div>
+
+    <div class="azioni-file">
+      <button class="btn-principale" id="btnAvvia" type="button" disabled>Avvia trascrizione</button>
+      <button class="btn-pericolo hidden" id="btnAnnulla" type="button">Annulla</button>
+    </div>
+
+    <div id="progresso" class="hidden">
+      <div class="barra"><span id="barraFill"></span></div>
+      <p id="progressoTesto">Preparazione…</p>
+      <pre id="registro"></pre>
+    </div>
+
+    <div class="errore hidden" id="errore"></div>
+  </section>
+
+  <!-- ============ 3. Risultato ============ -->
+  <section class="pannello hidden" id="sezioneRisultato">
+    <h2>3 · Trascrizione</h2>
+    <p id="meta"></p>
+    <textarea id="testo" readonly placeholder="La trascrizione apparirà qui…"></textarea>
+    <div class="azioni-file">
+      <button class="btn-secondario" id="btnTxt" type="button">Scarica .txt</button>
+      <button class="btn-secondario hidden" id="btnSrt" type="button">Scarica .srt</button>
+      <button class="btn-secondario" id="btnJson" type="button">Scarica .json</button>
+      <button class="btn-secondario" id="btnCopia" type="button">Copia testo</button>
+    </div>
+    <label class="checkbox" style="margin-top:1rem">
+      <input type="checkbox" id="mostraTimestamp" /> Mostra i timestamp nel riquadro (per i file .txt resta il testo continuo)
+    </label>
+  </section>
+
+  <footer class="pie">
+    Nessuna installazione, nessun server: tutto avviene in questo browser.<br />
+    <a href="https://github.com/Alessandro1040/trascrizione-audio-standalone" id="linkRepo" target="_blank" rel="noopener">Codice su GitHub</a>
+    · <a href="index.html" id="linkScarica" download>Scarica questo file .html</a>
+  </footer>
+
+</main>
+
+<script id="motore">
+/* ==================================================================
+   Trascrizione Audio — motore standalone (nessuna dipendenza esterna)
+   Tutto avviene nel browser: il file non viene mai caricato su un
+   server, solo i singoli segmenti vengono inviati all'endpoint scelto.
+   ================================================================== */
+'use strict';
+
+const VERSIONE = '1.0.0';
+const CHIAVE_STORAGE = 'trascrizioneAudioStandalone.v1';
+const FREQUENZA_TARGET = 16000;                  // Whisper lavora a 16 kHz mono
+const LIMITE_API_BYTE = 25 * 1024 * 1024;        // limite rigido dell'API OpenAI
+const LIMITE_DEFAULT_BYTE = 20 * 1024 * 1024;    // margine di sicurezza
+const COSTO_PER_MINUTO = 0.006;                  // $/minuto (whisper-1)
+const ESTENSIONI_AUDIO = [
+  'mp3', 'wav', 'm4a', 'mp4', 'mpeg', 'mpga', 'flac', 'ogg', 'oga',
+  'opus', 'aac', 'aiff', 'aif', 'wma', 'amr', '3gp', 'webm',
+];
+
+/* ------------------------------------------------------------------ */
+/* Utilità generale                                                    */
+/* ------------------------------------------------------------------ */
+
+function stringaAscii(vista, offset, lunghezza) {
+  let testo = '';
+  for (let i = 0; i < lunghezza; i += 1) testo += String.fromCharCode(vista.getUint8(offset + i));
+  return testo;
+}
+
+function scriviAscii(vista, offset, testo) {
+  for (let i = 0; i < testo.length; i += 1) vista.setUint8(offset + i, testo.charCodeAt(i));
+}
+
+const pad = (numero, cifre) => String(numero).padStart(cifre, '0');
+
+function formattaDimensione(byte) {
+  if (!Number.isFinite(byte)) return '—';
+  if (byte >= 1024 * 1024 * 1024) return `${(byte / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (byte >= 1024 * 1024) return `${(byte / 1024 / 1024).toFixed(2)} MB`;
+  if (byte >= 1024) return `${Math.round(byte / 1024)} KB`;
+  return `${byte} byte`;
+}
+
+function formattaDurata(secondi) {
+  if (!Number.isFinite(secondi) || secondi <= 0) return '—';
+  const totale = Math.round(secondi);
+  const ore = Math.floor(totale / 3600);
+  const minuti = Math.floor((totale % 3600) / 60);
+  const resto = totale % 60;
+  return ore > 0 ? `${ore}h ${pad(minuti, 2)}m ${pad(resto, 2)}s` : `${minuti}m ${pad(resto, 2)}s`;
+}
+
+/** mm:ss, usato nell'anteprima con i timestamp. */
+function formattaBreve(secondi) {
+  const totale = Math.max(0, Math.floor(secondi));
+  return `${pad(Math.floor(totale / 60), 2)}:${pad(totale % 60, 2)}`;
+}
+
+/** hh:mm:ss,mmm — formato SubRip. */
+function formattaSubRip(secondi) {
+  const totale = Math.max(0, secondi);
+  return `${pad(Math.floor(totale / 3600), 2)}:`
+    + `${pad(Math.floor((totale % 3600) / 60), 2)}:`
+    + `${pad(Math.floor(totale % 60), 2)},`
+    + pad(Math.round((totale - Math.floor(totale)) * 1000), 3);
+}
+
+function costruisciSrt(segmenti) {
+  return segmenti
+    .map((s, indice) => `${indice + 1}\n${formattaSubRip(s.inizio)} --> ${formattaSubRip(s.fine)}\n${s.testo}\n`)
+    .join('\n');
+}
+
+function testoConTimestamp(segmenti) {
+  return segmenti.map((s) => `[${formattaBreve(s.inizio)}] ${s.testo}`).join('\n');
+}
+
+const stimaCosto = (secondi) => Number(((secondi / 60) * COSTO_PER_MINUTO).toFixed(4));
+const pausa = (ms) => new Promise((risolvi) => setTimeout(risolvi, ms));
+
+/* ------------------------------------------------------------------ */
+/* WAV: lettura, estrazione di un intervallo, scrittura                */
+/* ------------------------------------------------------------------ */
+
+const CODEC_PCM = 1;
+const CODEC_FLOAT = 3;
+const CODEC_EXTENSIBLE = 0xfffe;
+
+/**
+ * Interpreta un file RIFF/WAVE senza decodificarlo: restituisce una vista
+ * sui dati PCM originali (memoria praticamente nulla) oppure null.
+ */
+function analizzaWav(buffer) {
+  if (!buffer || buffer.byteLength < 44) return null;
+  const vista = new DataView(buffer);
+  if (stringaAscii(vista, 0, 4) !== 'RIFF' || stringaAscii(vista, 8, 4) !== 'WAVE') return null;
+
+  let offset = 12;
+  let formato = null;
+  let dati = null;
+
+  while (offset + 8 <= vista.byteLength && !(formato && dati)) {
+    const id = stringaAscii(vista, offset, 4);
+    const dimensione = vista.getUint32(offset + 4, true);
+    const inizio = offset + 8;
+    const disponibile = Math.min(dimensione, Math.max(0, vista.byteLength - inizio));
+
+    if (id === 'fmt ' && disponibile >= 16) {
+      let codec = vista.getUint16(inizio, true);
+      if (codec === CODEC_EXTENSIBLE && disponibile >= 26) codec = vista.getUint16(inizio + 24, true);
+      formato = {
+        codec,
+        canali: vista.getUint16(inizio + 2, true),
+        frequenza: vista.getUint32(inizio + 4, true),
+        bit: vista.getUint16(inizio + 14, true),
+      };
+    } else if (id === 'data') {
+      dati = { inizio, dimensione: disponibile };
+    }
+
+    offset = inizio + dimensione + (dimensione % 2);
+  }
+
+  if (!formato || !dati) return null;
+  const { codec, canali, frequenza, bit } = formato;
+  const supportato = (codec === CODEC_PCM && [8, 16, 24, 32].includes(bit))
+    || (codec === CODEC_FLOAT && [32, 64].includes(bit));
+  if (!supportato || !canali || !frequenza) return null;
+
+  const campioni = Math.floor(dati.dimensione / ((bit / 8) * canali));
+  if (campioni < 1) return null;
+
+  return {
+    vista,
+    inizioDati: dati.inizio,
+    byteCampione: bit / 8,
+    canali,
+    frequenza,
+    codec,
+    bit,
+    campioni,
+    durata: campioni / frequenza,
+  };
+}
+
+/** Legge un campione normalizzato nell'intervallo [-1, 1]. */
+function leggiCampione(vista, offset, codec, bit) {
+  if (codec === CODEC_FLOAT) return bit === 32 ? vista.getFloat32(offset, true) : vista.getFloat64(offset, true);
+  if (bit === 8) return (vista.getUint8(offset) - 128) / 128;
+  if (bit === 16) return vista.getInt16(offset, true) / 32768;
+  if (bit === 24) {
+    const valore = vista.getUint8(offset) | (vista.getUint8(offset + 1) << 8) | (vista.getUint8(offset + 2) << 16);
+    return ((valore & 0x800000) ? valore - 0x1000000 : valore) / 8388608;
+  }
+  return vista.getInt32(offset, true) / 2147483648;
+}
+
+/** Estrae un intervallo del WAV originale come PCM mono a 16 kHz. */
+function estraiMono16Wav(wav, inizioSecondi, durataSecondi) {
+  const primo = Math.max(0, Math.floor(inizioSecondi * wav.frequenza));
+  const quanti = Math.max(1, Math.min(wav.campioni - primo, Math.ceil(durataSecondi * wav.frequenza)));
+  const totali = Math.max(1, Math.round(quanti * FREQUENZA_TARGET / wav.frequenza));
+  const uscita = new Int16Array(totali);
+  const passo = wav.frequenza / FREQUENZA_TARGET;
+  const passoCanale = wav.byteCampione * wav.canali;
+
+  for (let i = 0; i < totali; i += 1) {
+    const posizione = primo + i * passo;
+    const base = Math.min(Math.floor(posizione), wav.campioni - 1);
+    const dopo = Math.min(base + 1, wav.campioni - 1);
+    const frazione = posizione - base;
+    let somma = 0;
+
+    for (let canale = 0; canale < wav.canali; canale += 1) {
+      const a = leggiCampione(
+        wav.vista, wav.inizioDati + base * passoCanale + canale * wav.byteCampione, wav.codec, wav.bit
+      );
+      const b = leggiCampione(
+        wav.vista, wav.inizioDati + dopo * passoCanale + canale * wav.byteCampione, wav.codec, wav.bit
+      );
+      somma += a * (1 - frazione) + b * frazione;
+    }
+
+    uscita[i] = Math.max(-32768, Math.min(32767, Math.round((somma / wav.canali) * 32767)));
+  }
+
+  return uscita;
+}
+
+/** Costruisce un file WAV mono 16 bit a partire dai campioni. */
+function creaBlobWav(campioni, frequenza = FREQUENZA_TARGET) {
+  const dati = new ArrayBuffer(44 + campioni.length * 2);
+  const vista = new DataView(dati);
+
+  scriviAscii(vista, 0, 'RIFF');
+  vista.setUint32(4, 36 + campioni.length * 2, true);
+  scriviAscii(vista, 8, 'WAVE');
+  scriviAscii(vista, 12, 'fmt ');
+  vista.setUint32(16, 16, true);
+  vista.setUint16(20, 1, true);            // PCM
+  vista.setUint16(22, 1, true);            // mono
+  vista.setUint32(24, frequenza, true);
+  vista.setUint32(28, frequenza * 2, true);
+  vista.setUint16(32, 2, true);
+  vista.setUint16(34, 16, true);
+  scriviAscii(vista, 36, 'data');
+  vista.setUint32(40, campioni.length * 2, true);
+  new Int16Array(dati, 44).set(campioni);
+
+  return new Blob([dati], { type: 'audio/wav' });
+}
+
+/* ------------------------------------------------------------------ */
+/* MP3: scansione dei frame (per dividere senza decodificare il file)  */
+/* ------------------------------------------------------------------ */
+
+const FREQUENZE_MPEG = {
+  3: [44100, 48000, 32000],   // MPEG 1
+  2: [22050, 24000, 16000],   // MPEG 2
+  0: [11025, 12000, 8000],    // MPEG 2.5
+};
+const BITRATE_L3 = {
+  3: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],  // kbps
+  2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+};
+
+/** Legge la testa di un frame MPEG Layer III (null se non è un frame valido). */
+function testaFrameMp3(vista, offset) {
+  if (offset + 4 > vista.byteLength) return null;
+  const testa = vista.getUint32(offset, false);
+  // 11 bit di sincronizzazione a 1: si usa lo shift senza segno perché in
+  // JavaScript gli operatori bit a bit lavorano su interi a 32 bit con segno.
+  if ((testa >>> 21) !== 0x7ff) return null;
+
+  const versione = (testa >>> 19) & 3;      // 0 = MPEG2.5, 1 = riservato, 2 = MPEG2, 3 = MPEG1
+  const livello = (testa >>> 17) & 3;       // 1 = Layer III
+  const indiceBitrate = (testa >>> 12) & 15;
+  const indiceFrequenza = (testa >>> 10) & 3;
+  const padding = (testa >>> 9) & 1;
+
+  if (versione === 1 || livello !== 1 || indiceBitrate === 0 || indiceBitrate === 15 || indiceFrequenza === 3) {
+    return null;
+  }
+
+  const frequenza = FREQUENZE_MPEG[versione][indiceFrequenza];
+  const bitrate = BITRATE_L3[versione === 3 ? 3 : 2][indiceBitrate] * 1000;
+  const campioni = versione === 3 ? 1152 : 576;
+  const lunghezza = Math.floor((campioni / 8) * bitrate / frequenza) + padding;
+  if (lunghezza <= 8 || offset + lunghezza > vista.byteLength) return null;
+
+  return { offset, lunghezza, campioni, frequenza, bitrate, durata: campioni / frequenza };
+}
+
+function saltaId3(vista) {
+  if (vista.byteLength < 10 || stringaAscii(vista, 0, 3) !== 'ID3') return 0;
+  const dimensione = ((vista.getUint8(6) & 0x7f) << 21) | ((vista.getUint8(7) & 0x7f) << 14)
+    | ((vista.getUint8(8) & 0x7f) << 7) | (vista.getUint8(9) & 0x7f);
+  return Math.min(10 + dimensione, vista.byteLength);
+}
+
+/**
+ * Elenca i frame audio di un file MP3 con l'inizio cumulativo: permette di
+ * inviare porzioni del file originale (nessuna decodifica, nessuna perdita).
+ * Restituisce null se il file non è un MP3 riconoscibile.
+ */
+function scansionaMp3(buffer) {
+  if (!buffer || buffer.byteLength < 1024) return null;
+  const vista = new DataView(buffer);
+  const frame = [];
+  let offset = saltaId3(vista);
+  let tempo = 0;
+
+  while (offset + 4 <= vista.byteLength) {
+    const corrente = testaFrameMp3(vista, offset);
+
+    if (!corrente) {
+      // Risincronizzazione: cerca la prossima testa valida entro 4 KB.
+      let ripresa = -1;
+      for (let scarto = 1; scarto < 4096 && offset + scarto + 4 <= vista.byteLength; scarto += 1) {
+        if (testaFrameMp3(vista, offset + scarto)) {
+          ripresa = offset + scarto;
+          break;
+        }
+      }
+      if (ripresa < 0) break;
+      offset = ripresa;
+      continue;
+    }
+
+    // Il primo frame deve essere seguito da un altro frame: evita falsi positivi.
+    if (frame.length === 0 && !testaFrameMp3(vista, offset + corrente.lunghezza)) {
+      offset += 1;
+      continue;
+    }
+
+    frame.push({
+      indice: frame.length,
+      offset: corrente.offset,
+      lunghezza: corrente.lunghezza,
+      frequenza: corrente.frequenza,
+      bitrate: corrente.bitrate,
+      inizio: tempo,
+      durata: corrente.durata,
+    });
+    tempo += corrente.durata;
+    offset += corrente.lunghezza;
+  }
+
+  if (frame.length < 4) return null;
+  return { frame, durata: tempo, frequenza: frame[0].frequenza, bitrate: frame[0].bitrate };
+}
+
+/* ------------------------------------------------------------------ */
+/* Pianificazione dei segmenti                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Raggruppa i frame MP3 in segmenti che rispettano la durata indicata e
+ * restano sotto il limite di byte per richiesta.
+ */
+function raggruppaFrameMp3(frame, secondiChunk, byteMax, offsetIniziale = 0) {
+  const segmenti = [];
+  let corrente = null;
+
+  const chiudi = () => {
+    if (!corrente) return;
+    segmenti.push({
+      indice: segmenti.length,
+      tipo: 'mp3',
+      inizio: offsetIniziale + corrente.inizio,
+      durata: corrente.durata,
+      primo: corrente.primo,
+      byte: corrente.byte,
+    });
+    corrente = null;
+  };
+
+  for (const f of frame) {
+    if (corrente && (corrente.durata >= secondiChunk || corrente.byte + f.lunghezza > byteMax)) chiudi();
+    if (!corrente) corrente = { inizio: f.inizio, durata: 0, primo: f.offset, byte: 0 };
+    corrente.durata += f.durata;
+    corrente.byte = (f.offset + f.lunghezza) - corrente.primo;
+  }
+  chiudi();
+
+  return segmenti;
+}
+
+/** Segmenti per un WAV: estrazione PCM mono 16 kHz (32.000 byte al secondo). */
+function pianificaSegmentiWav(wav, secondiChunk, byteMax) {
+  const bytePerSecondo = FREQUENZA_TARGET * 2;
+  const durataPerByte = Math.max(1, (byteMax - 44) / bytePerSecondo);
+  const durataSegmento = Math.max(1, Math.min(secondiChunk, durataPerByte));
+  const segmenti = [];
+
+  for (let inizio = 0; inizio < wav.durata; inizio += durataSegmento) {
+    const durata = Math.min(durataSegmento, wav.durata - inizio);
+    if (durata <= 0.05) break;
+    segmenti.push({
+      indice: segmenti.length,
+      tipo: 'wav',
+      inizio,
+      durata,
+      byte: Math.ceil(durata * bytePerSecondo) + 44,
+    });
+  }
+
+  return segmenti;
+}
+
+/** Segmenti per PCM mono a 16 kHz già decodificato (percorso di riserva). */
+function pianificaSegmentiPcm16(campioni, secondiChunk, byteMax) {
+  const bytePerSecondo = FREQUENZA_TARGET * 2;
+  const durataPerByte = Math.max(1, (byteMax - 44) / bytePerSecondo);
+  const durataSegmento = Math.max(1, Math.min(secondiChunk, durataPerByte));
+  const perSegmento = Math.max(1, Math.floor(durataSegmento * FREQUENZA_TARGET));
+  const segmenti = [];
+
+  for (let inizio = 0; inizio < campioni; inizio += perSegmento) {
+    const fine = Math.min(inizio + perSegmento, campioni);
+    segmenti.push({
+      indice: segmenti.length,
+      tipo: 'pcm',
+      inizio: inizio / FREQUENZA_TARGET,
+      durata: (fine - inizio) / FREQUENZA_TARGET,
+      daCampione: inizio,
+      aCampione: fine,
+      byte: (fine - inizio) * 2 + 44,
+    });
+  }
+
+  return segmenti;
+}
+
+/* ------------------------------------------------------------------ */
+/* Preparazione: sceglie la strategia migliore per il file             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Decodifica di riserva (formati che non si possono dividere senza
+ * decodifica): usa OfflineAudioContext e ricampiona a 16 kHz mono.
+ */
+async function decodificaPcm16(buffer, frequenza = FREQUENZA_TARGET) {
+  const Contesto = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!Contesto) throw new Error('Questo browser non supporta la decodifica audio (OfflineAudioContext).');
+
+  const contesto = new Contesto(2, 1, frequenza);
+  const audio = await contesto.decodeAudioData(buffer.slice(0));
+  const lunghezza = audio.length;
+  const somma = new Float32Array(lunghezza);
+
+  for (let canale = 0; canale < audio.numberOfChannels; canale += 1) {
+    const dati = audio.getChannelData(canale);
+    for (let i = 0; i < lunghezza; i += 1) somma[i] += dati[i] / audio.numberOfChannels;
+  }
+
+  const uscita = new Int16Array(lunghezza);
+  for (let i = 0; i < lunghezza; i += 1) {
+    const valore = Math.max(-1, Math.min(1, somma[i]));
+    uscita[i] = Math.max(-32768, Math.min(32767, Math.round(valore * 32767)));
+  }
+
+  return { campioni: uscita, durata: lunghezza / frequenza, frequenza, canali: audio.numberOfChannels };
+}
+
+/**
+ * Analizza il file e restituisce il "piano" della trascrizione: strategia,
+ * durata, elenco dei segmenti e funzione che produce il Blob di ciascuno.
+ *
+ * Strategie (dalla più efficiente alla più onerosa):
+ *  - intero     → il file non supera il limite: inviato così com'è;
+ *  - wav        → estrazione PCM mono 16 kHz, nessuna decodifica;
+ *  - mp3        → divisione ai confini dei frame, byte originali;
+ *  - decodifica → decodifica nel browser e ricampionamento a 16 kHz.
+ */
+async function preparaTrascrizione(file, opzioni = {}) {
+  const secondiChunk = Math.max(5, Number(opzioni.secondiChunk) || 600);
+  const byteMax = Math.min(
+    LIMITE_API_BYTE - 1024,
+    Math.max(64 * 1024, Math.round((Number(opzioni.limiteMb) || 20) * 1024 * 1024))
+  );
+  const nomeBase = (file.name || 'audio').replace(/\.[^.]+$/, '') || 'audio';
+
+  // 1) File entro il limite: invio diretto, nessuna conversione.
+  if (file.size <= byteMax) {
+    return {
+      strategia: 'intero',
+      durata: null,
+      segmenti: [{ indice: 0, tipo: 'intero', inizio: 0, durata: 0, byte: file.size }],
+      nome: file.name || 'audio',
+      blob: async () => file,
+    };
+  }
+
+  const buffer = await file.arrayBuffer();
+
+  // 2) WAV: si estrae solo l'intervallo necessario, senza decodificare.
+  const wav = analizzaWav(buffer);
+  if (wav) {
+    return {
+      strategia: 'wav',
+      durata: wav.durata,
+      frequenza: wav.frequenza,
+      canali: wav.canali,
+      segmenti: pianificaSegmentiWav(wav, secondiChunk, byteMax),
+      nome: `${nomeBase}.wav`,
+      blob: async (segmento) => creaBlobWav(estraiMono16Wav(wav, segmento.inizio, segmento.durata)),
+    };
+  }
+
+  // 3) MP3: si inviano porzioni del file originale, allineate ai frame.
+  const mp3 = scansionaMp3(buffer);
+  if (mp3) {
+    return {
+      strategia: 'mp3',
+      durata: mp3.durata,
+      frequenza: mp3.frequenza,
+      segmenti: raggruppaFrameMp3(mp3.frame, secondiChunk, byteMax),
+      nome: `${nomeBase}.mp3`,
+      blob: async (segmento) => new Blob(
+        [buffer.slice(segmento.primo, segmento.primo + segmento.byte)],
+        { type: 'audio/mpeg' }
+      ),
+    };
+  }
+
+  // 4) Riserva: decodifica completa e ricampionamento a 16 kHz mono.
+  const pcm = await decodificaPcm16(buffer);
+  return {
+    strategia: 'decodifica',
+    durata: pcm.durata,
+    frequenza: pcm.frequenza,
+    canali: pcm.canali,
+    segmenti: pianificaSegmentiPcm16(pcm.campioni.length, secondiChunk, byteMax),
+    nome: `${nomeBase}.wav`,
+    blob: async (segmento) => creaBlobWav(pcm.campioni.subarray(segmento.daCampione, segmento.aCampione)),
+  };
+}
+
+/**
+ * Stima prudenziale della memoria richiesta dalla decodifica: i formati
+ * compressi vengono espansi in PCM float a 44,1/48 kHz stereo.
+ */
+function stimaMemoriaDecodifica(byteFile) {
+  return Math.round(byteFile * 22);
+}
+
+/* ------------------------------------------------------------------ */
+/* Chiamate all'endpoint di trascrizione                              */
+/* ------------------------------------------------------------------ */
+
+const MESSAGGI_ERRORE = {
+  400: "L'endpoint ha rifiutato la richiesta: verifica il modello indicato.",
+  401: 'Chiave API non valida o revocata: controlla il campo "Chiave API OpenAI".',
+  402: 'Credito esaurito: ricarica il saldo del tuo account.',
+  403: 'Accesso negato per questa chiave.',
+  404: 'Endpoint non trovato: controlla il campo "Endpoint API" (di solito finisce con /v1).',
+  413: 'Segmento troppo grande per il servizio: riduci "Limite MB per segmento".',
+  415: "Formato del segmento non accettato dal servizio.",
+  429: 'Troppe richieste o quota superata: attendi qualche secondo e riprova.',
+  500: 'Errore interno del servizio: riprova tra qualche istante.',
+  502: 'Servizio momentaneamente non raggiungibile: riprova.',
+  503: 'Servizio momentaneamente non disponibile: riprova.',
+};
+
+function messaggioErrore(stato, corpo) {
+  const dettaglio = corpo && corpo.error ? (corpo.error.message || corpo.error.code) : null;
+  const base = MESSAGGI_ERRORE[stato] || `Errore ${stato} durante la trascrizione.`;
+  return dettaglio ? `${base}\nDettaglio del servizio: ${dettaglio}` : base;
+}
+
+function normalizzaEndpoint(valore) {
+  const pulito = String(valore || '').trim().replace(/\/+$/, '');
+  return pulito || 'https://api.openai.com/v1';
+}
+
+/**
+ * Invia un segmento all'endpoint e restituisce la risposta JSON.
+ * Ritenta automaticamente sugli errori transitori (rete, 429, 5xx).
+ */
+async function chiamaTrascrizione(blob, nomeFile, config, prompt, segnale, tentativi = 3) {
+  const url = `${normalizzaEndpoint(config.endpoint)}/audio/transcriptions`;
+  let ultimoErrore = new Error('Trascrizione non riuscita.');
+
+  for (let tentativo = 1; tentativo <= tentativi; tentativo += 1) {
+    const modulo = new FormData();
+    modulo.append('file', blob, nomeFile);
+    modulo.append('model', config.modello || 'whisper-1');
+    if (config.lingua && config.lingua !== 'auto') modulo.append('language', config.lingua);
+    modulo.append('response_format', config.formatoRisposta === 'json' ? 'json' : 'verbose_json');
+    if (prompt) modulo.append('prompt', prompt);
+
+    try {
+      const risposta = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.chiave || ''}` },
+        body: modulo,
+        signal: segnale,
+      });
+
+      if (risposta.ok) return await risposta.json();
+
+      let corpo = null;
+      try {
+        corpo = await risposta.json();
+      } catch (ignorato) {
+        corpo = null;
+      }
+
+      const errore = new Error(messaggioErrore(risposta.status, corpo));
+      errore.status = risposta.status;
+      if (risposta.status !== 429 && risposta.status < 500) throw errore;
+      ultimoErrore = errore;
+    } catch (errore) {
+      if (errore.name === 'AbortError') throw errore;
+
+      if (errore.status) {
+        ultimoErrore = errore;
+        if (errore.status !== 429 && errore.status < 500) throw errore;
+      } else {
+        ultimoErrore = new Error(
+          'Impossibile contattare l\'endpoint: verifica la connessione e il campo "Endpoint API".\n'
+          + 'Se il browser blocca la richiesta (CORS), usa un endpoint che consenta le chiamate dal browser '
+          + 'oppure avvia il piccolo server incluso nel progetto "trascrizione-audio" e indica indirizzo locale, '
+          + 'o un servizio compatibile con Whisper in locale.\n'
+          + `Dettaglio tecnico: ${errore.message}`
+        );
+      }
+    }
+
+    if (tentativo < tentativi) await pausa(1000 * 2 ** (tentativo - 1));
+  }
+
+  throw ultimoErrore;
+}
+
+/* ------------------------------------------------------------------ */
+/* Orchestratore: prepara, invia in sequenza, ricompone                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Trascrive un file completo: analizza il file, invia i segmenti uno alla
+ * volta, ricompone il testo e calcola timestamp cumulativi e sottotitoli.
+ *
+ * @param {File}     file
+ * @param {object}   config    chiave, endpoint, modello, lingua, limiti…
+ * @param {object}   richiami  { onProgresso(evento), signal }
+ */
+async function eseguiTrascrizione(file, config, richiami = {}) {
+  const segnala = (evento) => {
+    if (typeof richiami.onProgresso === 'function') richiami.onProgresso(evento);
+  };
+  const segnale = richiami.signal;
+
+  segnala({ fase: 'preparazione', percento: 2, messaggio: 'Analisi del file…' });
+  const piano = await preparaTrascrizione(file, config);
+
+  const totale = piano.segmenti.length;
+  segnala({
+    fase: 'preparazione',
+    percento: 5,
+    totale,
+    messaggio: piano.strategia === 'intero'
+      ? `File caricato così com'è (${formattaDimensione(file.size)}).`
+      : `File suddiviso in ${totale} segmenti (strategia: ${piano.strategia}).`,
+  });
+
+  const testi = [];
+  const segmenti = [];
+  let linguaRilevata = null;
+  let prompt = null;
+  let secondiImpiegati = 0;
+
+  for (const segmento of piano.segmenti) {
+    const inizio = performance.now();
+    const blob = await piano.blob(segmento);
+
+    segnala({
+      fase: 'trascrizione',
+      percento: 5 + Math.round((segmento.indice / totale) * 90),
+      totale,
+      completati: segmento.indice,
+      messaggio: `Invio del segmento ${segmento.indice + 1} di ${totale} (${formattaDimensione(blob.size)})…`,
+    });
+
+    const dati = await chiamaTrascrizione(
+      blob, piano.nome, config, config.continuita ? prompt : null, segnale
+    );
+
+    const testo = String(dati.text || '').trim();
+    if (testo) testi.push(testo);
+    if (!linguaRilevata && dati.language) linguaRilevata = dati.language;
+
+    if (Array.isArray(dati.segments)) {
+      for (const s of dati.segments) {
+        const contenuto = String(s.text || '').trim();
+        if (!contenuto) continue;
+        segmenti.push({
+          inizio: segmento.inizio + Number(s.start || 0),
+          fine: segmento.inizio + Number(s.end || 0),
+          testo: contenuto,
+        });
+      }
+    }
+
+    if (config.continuita && testo) prompt = testo.slice(-240);
+
+    const durata = (performance.now() - inizio) / 1000;
+    secondiImpiegati += durata;
+    const rimanenti = Math.max(0, totale - segmento.indice - 1);
+    const media = secondiImpiegati / (segmento.indice + 1);
+
+    segnala({
+      fase: 'trascrizione',
+      percento: 5 + Math.round(((segmento.indice + 1) / totale) * 90),
+      totale,
+      completati: segmento.indice + 1,
+      secondiSegmento: Number(durata.toFixed(1)),
+      secondiStimati: Math.round(media * rimanenti),
+      messaggio: `Segmento ${segmento.indice + 1} di ${totale} completato in ${durata.toFixed(1)} s`,
+    });
+  }
+
+  return {
+    versione: VERSIONE,
+    strategia: piano.strategia,
+    durata: piano.durata,
+    durataSegmento: piano.durata ? piano.durata / totale : null,
+    segmentiTotali: totale,
+    testo: testi.join(' ').trim(),
+    segmenti,
+    srt: segmenti.length ? costruisciSrt(segmenti) : '',
+    timestampTesto: segmenti.length ? testoConTimestamp(segmenti) : '',
+    lingua: linguaRilevata || (config.lingua !== 'auto' ? config.lingua : 'auto'),
+    modello: config.modello || 'whisper-1',
+    costoStimato: piano.durata ? stimaCosto(piano.durata) : null,
+    secondiImpiegati: Number(secondiImpiegati.toFixed(1)),
+    fileOriginale: { nome: file.name, byte: file.size },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Configurazione persistente                                          */
+/* ------------------------------------------------------------------ */
+
+const CONFIG_PREDEFINITA = {
+  chiave: '',
+  endpoint: 'https://api.openai.com/v1',
+  modello: 'whisper-1',
+  lingua: 'auto',
+  secondiChunk: 600,
+  limiteMb: 20,
+  formatoRisposta: 'verbose',
+  timestamp: false,
+  continuita: true,
+  salvaChiave: true,
+};
+
+function leggiConfig() {
+  const config = Object.assign({}, CONFIG_PREDEFINITA);
+  try {
+    const salvata = window.localStorage ? window.localStorage.getItem(CHIAVE_STORAGE) : null;
+    if (salvata) Object.assign(config, JSON.parse(salvata));
+  } catch (ignorato) {
+    /* localStorage non disponibile: si usano i valori predefiniti */
+  }
+  return config;
+}
+
+function salvaConfig(config) {
+  try {
+    if (!window.localStorage) return;
+    const daSalvare = Object.assign({}, config);
+    if (!config.salvaChiave) daSalvare.chiave = '';
+    window.localStorage.setItem(CHIAVE_STORAGE, JSON.stringify(daSalvare));
+  } catch (ignorato) {
+    /* modalità privata o storage bloccato: la configurazione resta in memoria */
+  }
+}
+
+function scaricaFile(contenuto, nome, tipoMime) {
+  const blob = new Blob([contenuto], { type: tipoMime });
+  const url = URL.createObjectURL(blob);
+  const collegamento = document.createElement('a');
+  collegamento.href = url;
+  collegamento.download = nome;
+  document.body.appendChild(collegamento);
+  collegamento.click();
+  document.body.removeChild(collegamento);
+  URL.revokeObjectURL(url);
+}
+
+/* ------------------------------------------------------------------ */
+/* Interfaccia                                                         */
+/* ------------------------------------------------------------------ */
+
+let fileCorrente = null;
+let annullatore = null;
+let risultatoCorrente = null;
+let inCorso = false;
+
+function avviaApp() {
+  const per = (id) => document.getElementById(id);
+  const el = {
+    chiave: per('chiave'), endpoint: per('endpoint'), modello: per('modello'), lingua: per('lingua'),
+    secondiChunk: per('secondiChunk'), limiteMb: per('limiteMb'), formatoRisposta: per('formatoRisposta'),
+    timestamp: per('timestamp'), continuita: per('continuita'), salvaChiave: per('salvaChiave'),
+    dropzone: per('dropzone'), fileInput: per('fileInput'), btnScegli: per('btnScegli'),
+    infoFile: per('infoFile'), nomeFile: per('nomeFile'), dettagliFile: per('dettagliFile'),
+    btnRimuovi: per('btnRimuovi'), avvisoFile: per('avvisoFile'),
+    btnAvvia: per('btnAvvia'), btnAnnulla: per('btnAnnulla'),
+    progresso: per('progresso'), barraFill: per('barraFill'), progressoTesto: per('progressoTesto'),
+    registro: per('registro'), errore: per('errore'),
+    risultato: per('sezioneRisultato'), meta: per('meta'), testo: per('testo'),
+    btnTxt: per('btnTxt'), btnSrt: per('btnSrt'), btnJson: per('btnJson'), btnCopia: per('btnCopia'),
+    mostraTimestamp: per('mostraTimestamp'),
+  };
+
+  let righeRegistro = [];
+
+  const mostraErrore = (messaggio) => {
+    el.errore.textContent = messaggio;
+    el.errore.classList.remove('hidden');
+  };
+  const nascondiErrore = () => el.errore.classList.add('hidden');
+
+  const aggiornaRegistro = (riga) => {
+    righeRegistro.push(riga);
+    el.registro.textContent = righeRegistro.join('\n');
+    el.registro.scrollTop = el.registro.scrollHeight;
+  };
+
+  /* ---- configurazione ---- */
+
+  function popolaCampi(config) {
+    el.chiave.value = config.chiave;
+    el.endpoint.value = config.endpoint;
+    el.modello.value = config.modello;
+    el.lingua.value = config.lingua;
+    el.secondiChunk.value = config.secondiChunk;
+    el.limiteMb.value = config.limiteMb;
+    el.formatoRisposta.value = config.formatoRisposta;
+    el.timestamp.checked = Boolean(config.timestamp);
+    el.continuita.checked = Boolean(config.continuita);
+    el.salvaChiave.checked = Boolean(config.salvaChiave);
+  }
+
+  function leggiCampi() {
+    return {
+      chiave: el.chiave.value.trim(),
+      endpoint: el.endpoint.value.trim(),
+      modello: el.modello.value.trim() || 'whisper-1',
+      lingua: el.lingua.value,
+      secondiChunk: Math.max(5, Number(el.secondiChunk.value) || 600),
+      limiteMb: Math.max(0.05, Math.min(24, Number(el.limiteMb.value) || 20)),
+      formatoRisposta: el.formatoRisposta.value,
+      timestamp: el.timestamp.checked,
+      continuita: el.continuita.checked,
+      salvaChiave: el.salvaChiave.checked,
+    };
+  }
+
+  popolaCampi(leggiConfig());
+
+  /* ---- selezione del file ---- */
+
+  function aggiornaAvvisoFile(file, estensione) {
+    const byteMax = leggiCampi().limiteMb * 1024 * 1024;
+    let nota;
+
+    if (file.size <= byteMax) {
+      nota = 'File entro il limite di 25 MB: verrà inviato in un\'unica richiesta.';
+    } else if (estensione === 'wav' || estensione === 'wave') {
+      nota = 'WAV grande: convertito in mono 16 kHz e diviso in segmenti senza decodifica (veloce, memoria minima).';
+    } else if (estensione === 'mp3') {
+      nota = 'MP3 grande: diviso ai confini dei frame e inviato a segmenti, senza ricodifica né perdita di qualità.';
+    } else {
+      nota = 'Formato che richiede la decodifica completa nel browser '
+        + `(stima ${formattaDimensione(stimaMemoriaDecodifica(file.size))} di memoria): `
+        + 'per file molto lunghi conviene convertirlo in MP3 o WAV.';
+    }
+
+    el.avvisoFile.textContent = nota;
+    el.avvisoFile.classList.remove('hidden');
+  }
+
+  function accettaFile(file) {
+    const estensione = (file.name.split('.').pop() || '').toLowerCase();
+    const tipo = file.type || '';
+    const valido = tipo.startsWith('audio/') || tipo === 'video/mp4' || ESTENSIONI_AUDIO.includes(estensione);
+
+    if (!valido) {
+      mostraErrore(`"${file.name}" non sembra un file audio. Formati accettati: ${ESTENSIONI_AUDIO.join(', ')}.`);
+      return;
+    }
+
+    fileCorrente = file;
+    el.nomeFile.textContent = file.name;
+    el.dettagliFile.textContent = `${formattaDimensione(file.size)} · ${estensione ? estensione.toUpperCase() : 'audio'}`;
+    el.infoFile.classList.remove('hidden');
+    el.btnAvvia.disabled = false;
+    el.risultato.classList.add('hidden');
+    nascondiErrore();
+    aggiornaAvvisoFile(file, estensione);
+  }
+
+  function rimuoviFile() {
+    fileCorrente = null;
+    el.fileInput.value = '';
+    el.infoFile.classList.add('hidden');
+    el.avvisoFile.classList.add('hidden');
+    el.progresso.classList.add('hidden');
+    el.btnAvvia.disabled = true;
+    el.risultato.classList.add('hidden');
+    nascondiErrore();
+  }
+
+  el.btnScegli.addEventListener('click', (evento) => {
+    evento.stopPropagation();
+    el.fileInput.click();
+  });
+  el.dropzone.addEventListener('click', () => el.fileInput.click());
+  el.fileInput.addEventListener('change', (evento) => {
+    if (evento.target.files && evento.target.files.length) accettaFile(evento.target.files[0]);
+  });
+  el.dropzone.addEventListener('dragover', (evento) => {
+    evento.preventDefault();
+    el.dropzone.classList.add('dragover');
+  });
+  el.dropzone.addEventListener('dragleave', () => el.dropzone.classList.remove('dragover'));
+  el.dropzone.addEventListener('drop', (evento) => {
+    evento.preventDefault();
+    el.dropzone.classList.remove('dragover');
+    if (evento.dataTransfer && evento.dataTransfer.files.length) accettaFile(evento.dataTransfer.files[0]);
+  });
+  document.addEventListener('paste', (evento) => {
+    const file = evento.clipboardData && evento.clipboardData.files && evento.clipboardData.files[0];
+    if (file) accettaFile(file);
+  });
+  el.btnRimuovi.addEventListener('click', (evento) => {
+    evento.stopPropagation();
+    rimuoviFile();
+  });
+
+  /* ---- trascrizione ---- */
+
+  function aggiornaProgresso(evento) {
+    el.progresso.classList.remove('hidden');
+    el.barraFill.style.width = `${evento.percento || 0}%`;
+
+    let testo = evento.messaggio || '';
+    if (evento.secondiStimati > 0 && evento.completati < evento.totale) {
+      testo += ` · restano circa ${evento.secondiStimati} s`;
+    }
+    el.progressoTesto.textContent = testo;
+
+    if (evento.fase === 'trascrizione' && typeof evento.secondiSegmento === 'number') {
+      aggiornaRegistro(`• ${evento.messaggio}`);
+    }
+  }
+
+  function mostraRisultato(risultato) {
+    el.testo.value = el.mostraTimestamp.checked && risultato.timestampTesto
+      ? risultato.timestampTesto
+      : risultato.testo;
+
+    const meta = [];
+    if (risultato.durata) meta.push(`durata ${formattaDurata(risultato.durata)}`);
+    meta.push(`strategia: ${risultato.strategia}`);
+    meta.push(`${risultato.segmentiTotali} segment${risultato.segmentiTotali === 1 ? 'o' : 'i'}`);
+    meta.push(`lingua ${String(risultato.lingua).toUpperCase()}`);
+    meta.push(`modello ${risultato.modello}`);
+    meta.push(`${risultato.testo.split(/\s+/).filter(Boolean).length} parole`);
+    if (risultato.costoStimato !== null) meta.push(`costo stimato ~$${risultato.costoStimato.toFixed(4)}`);
+    meta.push(`elaborato in ${risultato.secondiImpiegati} s`);
+    el.meta.textContent = meta.join(' · ');
+
+    el.btnSrt.classList.toggle('hidden', !risultato.srt);
+    el.risultato.classList.remove('hidden');
+    el.risultato.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  el.btnAvvia.addEventListener('click', async () => {
+    if (!fileCorrente || inCorso) return;
+
+    const config = leggiCampi();
+    salvaConfig(config);
+
+    if (!config.chiave) {
+      mostraErrore('Inserisci la tua chiave API nel campo "Chiave API OpenAI" (oppure quella dell\'endpoint che usi).');
+      return;
+    }
+
+    inCorso = true;
+    annullatore = new AbortController();
+    el.btnAvvia.disabled = true;
+    el.btnAvvia.textContent = 'Trascrizione in corso…';
+    el.btnAnnulla.classList.remove('hidden');
+    el.risultato.classList.add('hidden');
+    nascondiErrore();
+    righeRegistro = [];
+    el.registro.textContent = '';
+    el.barraFill.style.width = '0%';
+    el.progressoTesto.textContent = 'Preparazione…';
+    el.progresso.classList.remove('hidden');
+
+    try {
+      const risultato = await eseguiTrascrizione(fileCorrente, config, {
+        onProgresso: aggiornaProgresso,
+        signal: annullatore.signal,
+      });
+      risultatoCorrente = risultato;
+      mostraRisultato(risultato);
+      aggiornaRegistro(`✓ Completato: ${risultato.secondiImpiegati} s, ${risultato.segmentiTotali} segmenti.`);
+    } catch (errore) {
+      if (errore.name === 'AbortError') {
+        el.progressoTesto.textContent = 'Trascrizione annullata.';
+      } else {
+        mostraErrore(errore.message);
+        aggiornaRegistro(`✗ ${errore.message.split('\n')[0]}`);
+      }
+    } finally {
+      inCorso = false;
+      annullatore = null;
+      el.btnAvvia.disabled = false;
+      el.btnAvvia.textContent = 'Avvia trascrizione';
+      el.btnAnnulla.classList.add('hidden');
+    }
+  });
+
+  el.btnAnnulla.addEventListener('click', () => {
+    if (annullatore) annullatore.abort();
+  });
+
+  /* ---- risultato: download, copia, timestamp ---- */
+
+  el.mostraTimestamp.addEventListener('change', () => {
+    if (!risultatoCorrente) return;
+    el.testo.value = el.mostraTimestamp.checked && risultatoCorrente.timestampTesto
+      ? risultatoCorrente.timestampTesto
+      : risultatoCorrente.testo;
+  });
+
+  const nomeBaseFile = () => {
+    const base = fileCorrente ? fileCorrente.name.replace(/\.[^.]+$/, '') : 'trascrizione';
+    return `${base}_${new Date().toISOString().slice(0, 10)}`;
+  };
+
+  el.btnTxt.addEventListener('click', () => {
+    if (!risultatoCorrente) return;
+    scaricaFile(risultatoCorrente.testo, `${nomeBaseFile()}.txt`, 'text/plain;charset=utf-8');
+  });
+
+  el.btnSrt.addEventListener('click', () => {
+    if (!risultatoCorrente || !risultatoCorrente.srt) return;
+    scaricaFile(risultatoCorrente.srt, `${nomeBaseFile()}.srt`, 'application/x-subrip;charset=utf-8');
+  });
+
+  el.btnJson.addEventListener('click', () => {
+    if (!risultatoCorrente) return;
+    scaricaFile(
+      JSON.stringify(risultatoCorrente, null, 2),
+      `${nomeBaseFile()}.json`,
+      'application/json;charset=utf-8'
+    );
+  });
+
+  el.btnCopia.addEventListener('click', async () => {
+    const testo = el.testo.value;
+    if (!testo) return;
+    try {
+      await navigator.clipboard.writeText(testo);
+      el.btnCopia.textContent = '✓ Copiato!';
+      setTimeout(() => { el.btnCopia.textContent = 'Copia testo'; }, 2000);
+    } catch (errore) {
+      mostraErrore('Impossibile copiare: usa il download del file .txt.');
+    }
+  });
+
+
+}
+
+/* ------------------------------------------------------------------ */
+/* API interna (usata anche dai test automatici)                       */
+/* ------------------------------------------------------------------ */
+
+window.TrascrizioneAudio = {
+  VERSIONE,
+  FREQUENZA_TARGET,
+  LIMITE_API_BYTE,
+  LIMITE_DEFAULT_BYTE,
+  analizzaWav,
+  leggiCampione,
+  estraiMono16Wav,
+  creaBlobWav,
+  testaFrameMp3,
+  scansionaMp3,
+  raggruppaFrameMp3,
+  pianificaSegmentiWav,
+  pianificaSegmentiPcm16,
+  decodificaPcm16,
+  preparaTrascrizione,
+  chiamaTrascrizione,
+  eseguiTrascrizione,
+  costruisciSrt,
+  testoConTimestamp,
+  formattaSubRip,
+  formattaBreve,
+  formattaDurata,
+  formattaDimensione,
+  stimaCosto,
+  stimaMemoriaDecodifica,
+  messaggioErrore,
+  normalizzaEndpoint,
+  leggiConfig,
+  salvaConfig,
+};
+
+/* Avvio dell'interfaccia: nei test Node (senza DOM) questa parte non gira. */
+if (typeof document !== 'undefined' && document && typeof document.getElementById === 'function') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', avviaApp);
+  } else {
+    avviaApp();
+  }
+}
+
+
+
+
+
+
+
+
+</script>
+</body>
+</html>

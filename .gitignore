@@ -1,0 +1,14 @@
+# Dipendenze dei test
+node_modules/
+
+# File generati dai test
+test/tmp/
+
+# Sistema operativo / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# File di lavoro
+*.log
