@@ -168,9 +168,9 @@ footer.pie a:hover { text-decoration: underline; }
         <div class="campo">
           <label for="modelloLocale">Modello locale</label>
           <select id="modelloLocale">
-            <option value="Xenova/whisper-tiny">whisper-tiny — ~38 MB, molto veloce</option>
-            <option value="Xenova/whisper-base">whisper-base — ~73 MB, buon compromesso</option>
-            <option value="Xenova/whisper-small">whisper-small — ~237 MB, più preciso</option>
+            <option value="Xenova/whisper-tiny">whisper-tiny — ~38 MB, molto veloce, precisione base</option>
+            <option value="Xenova/whisper-base">whisper-base — ~73 MB, veloce</option>
+            <option value="Xenova/whisper-small">whisper-small — ~237 MB, più preciso (consigliato)</option>
           </select>
         </div>
         <div class="campo">
@@ -226,8 +226,8 @@ footer.pie a:hover { text-decoration: underline; }
         </select>
       </div>
       <div class="campo">
-        <label for="secondiFinestra">Finestra audio locale (s)</label>
-        <input type="number" id="secondiFinestra" value="30" min="5" max="30" step="1" />
+        <label for="secondiBlocco">Blocco audio locale (s)</label>
+        <input type="number" id="secondiBlocco" value="300" min="30" max="900" step="30" />
       </div>
     </div>
 
@@ -374,7 +374,15 @@ self.onmessage = async (evento) => {
 
     if (richiesta.tipo === 'trascrivi') {
       if (!trascrittore) throw new Error('Il modello locale non è ancora stato caricato.');
-      const opzioni = { return_timestamps: true, task: 'transcribe' };
+      // Elaborazione lunga con contesto: la libreria gestisce le finestre da 30 s
+      // con sovrapposizione (stride) e porta avanti il contesto del testo già
+      // prodotto, evitando di perdere parole ai confini fra le finestre.
+      const opzioni = {
+        return_timestamps: true,
+        task: 'transcribe',
+        chunk_length_s: 30,
+        stride_length_s: 5,
+      };
       if (richiesta.lingua) opzioni.language = richiesta.lingua;
 
       const risultato = await trascrittore(richiesta.audio, opzioni);
@@ -395,6 +403,7 @@ self.onmessage = async (evento) => {
   } catch (errore) {
     avvisa({
       tipo: 'errore',
+      fase: richiesta.tipo,
       id: richiesta.id,
       messaggio: (errore && errore.message) ? errore.message : String(errore),
     });
@@ -505,7 +514,9 @@ const LINGUE_WHISPER = {
   zh: 'chinese', th: 'thai', vi: 'vietnamese', id: 'indonesian', ms: 'malay',
 };
 
-const FINESTRA_LOCALE_S = 30;   // Whisper elabora al massimo 30 secondi per volta
+const FINESTRA_LOCALE_S = 30;      // massimo che Whisper gestisce per contesto
+const BLOCCO_LOCALE_S = 300;       // blocco elaborato per volta (per il progresso)
+const SOGLIA_SILENZIO = 0.0015;    // sotto questo RMS il blocco è considerato silenzioso
 
 const nomeLinguaWhisper = (codice) => (codice && codice !== 'auto' ? LINGUE_WHISPER[codice] || null : null);
 
@@ -516,23 +527,37 @@ function float32DaInt16(campioni) {
   return uscita;
 }
 
-/** Divide i campioni in finestre da al massimo 30 secondi (Whisper). */
-function finestreAudio(campioni, frequenza = FREQUENZA_TARGET, secondiFinestra = FINESTRA_LOCALE_S) {
-  const secondi = Math.max(5, Math.min(FINESTRA_LOCALE_S, Number(secondiFinestra) || FINESTRA_LOCALE_S));
-  const perFinestra = Math.round(frequenza * secondi);
-  const finestre = [];
+/** Energia media (RMS) dei campioni: serve a riconoscere i tratti silenziosi. */
+function rmsAudio(campioni) {
+  if (!campioni || campioni.length === 0) return 0;
+  let somma = 0;
+  for (let i = 0; i < campioni.length; i += 1) {
+    const valore = campioni[i] / 32768;
+    somma += valore * valore;
+  }
+  return Math.sqrt(somma / campioni.length);
+}
 
-  for (let inizio = 0; inizio < campioni.length; inizio += perFinestra) {
-    const fine = Math.min(inizio + perFinestra, campioni.length);
-    finestre.push({
-      indice: finestre.length,
+/**
+ * Divide i campioni in blocchi da elaborare uno alla volta (progresso e memoria).
+ * Dentro ogni blocco il modello lavora a finestre di 30 s con contesto condiviso.
+ */
+function blocchiAudio(campioni, frequenza = FREQUENZA_TARGET, secondiBlocco = BLOCCO_LOCALE_S) {
+  const secondi = Math.max(30, Math.min(900, Number(secondiBlocco) || BLOCCO_LOCALE_S));
+  const perBlocco = Math.round(frequenza * secondi);
+  const blocchi = [];
+
+  for (let inizio = 0; inizio < campioni.length; inizio += perBlocco) {
+    const fine = Math.min(inizio + perBlocco, campioni.length);
+    blocchi.push({
+      indice: blocchi.length,
       inizioSecondi: inizio / frequenza,
       durataSecondi: (fine - inizio) / frequenza,
       campioni: campioni.subarray(inizio, fine),
     });
   }
 
-  return finestre;
+  return blocchi;
 }
 
 /** La chiave API serve solo per endpoint remoti (con un server locale no). */
@@ -1106,13 +1131,24 @@ async function eseguiTrascrizione(file, config, richiami = {}) {
       messaggio: `Invio del segmento ${segmento.indice + 1} di ${totale} (${formattaDimensione(blob.size)})…`,
     });
 
+    // Se la lingua è su "automatico", quella riconosciuta nel primo segmento
+    // viene imposta ai segmenti successivi: evita cambi di lingua a metà file.
+    const configSegmento = linguaRilevata && config.lingua === 'auto'
+      ? Object.assign({}, config, { lingua: linguaRilevata })
+      : config;
+
     const dati = await chiamaTrascrizione(
-      blob, piano.nome, config, config.continuita ? prompt : null, segnale
+      blob, piano.nome, configSegmento, config.continuita ? prompt : null, segnale
     );
 
     const testo = String(dati.text || '').trim();
     if (testo) testi.push(testo);
-    if (!linguaRilevata && dati.language) linguaRilevata = dati.language;
+    if (!linguaRilevata && dati.language) {
+      linguaRilevata = dati.language;
+      if (config.lingua === 'auto' && piano.segmenti.length > 1) {
+        (richiami.onLog || (() => {}))(`Lingua riconosciuta: ${linguaRilevata} (usata per i segmenti successivi)`);
+      }
+    }
 
     if (Array.isArray(dati.segments)) {
       for (const s of dati.segments) {
@@ -1210,12 +1246,27 @@ function assicuraWorkerLocale() {
       return;
     }
 
-    if (messaggio.tipo === 'trascrizione' || messaggio.tipo === 'errore') {
+    if (messaggio.tipo === 'errore') {
+      const errore = new Error(messaggio.messaggio || 'Errore del motore locale.');
+
+      // Errore durante il caricamento del modello: sblocca chi sta aspettando.
+      if (messaggio.fase === 'carica' && caricamentoModelloLocale) {
+        const caricamento = caricamentoModelloLocale;
+        caricamentoModelloLocale = null;
+        caricamento.rifiuta(errore);
+        return;
+      }
+
       const lavoro = lavoroLocaleInCorso;
       lavoroLocaleInCorso = null;
-      if (!lavoro) return;
-      if (messaggio.tipo === 'trascrizione') lavoro.risolvi(messaggio);
-      else lavoro.rifiuta(new Error(messaggio.messaggio || 'Errore del motore locale.'));
+      if (lavoro) lavoro.rifiuta(errore);
+      return;
+    }
+
+    if (messaggio.tipo === 'trascrizione') {
+      const lavoro = lavoroLocaleInCorso;
+      lavoroLocaleInCorso = null;
+      if (lavoro) lavoro.risolvi(messaggio);
     }
   };
 
@@ -1238,16 +1289,15 @@ function assicuraWorkerLocale() {
   return workerLocale;
 }
 
-/** Scarica (una sola volta) e inizializza il modello locale, con avanzamento. */
-function caricaModelloLocale(config, onAvanzamento) {
-  const dispositivo = scegliDispositivo(config.dispositivo);
+/** Carica il modello sul dispositivo indicato (una richiesta per volta). */
+function caricaModelloSuDispositivo(config, dispositivo, onAvanzamento) {
   const chiave = `${config.modelloLocale}|${dispositivo}`;
 
   if (modelloLocalePronto === chiave) return Promise.resolve({ dispositivo });
 
   if (caricamentoModelloLocale) return caricamentoModelloLocale.promessa;
 
-  const stato = { chiave };
+  const stato = { chiave, dispositivo, dtype: dispositivo === 'webgpu' ? 'q4' : 'q8' };
   stato.promessa = new Promise((risolvi, rifiuta) => {
     stato.risolvi = risolvi;
     stato.rifiuta = rifiuta;
@@ -1260,14 +1310,34 @@ function caricaModelloLocale(config, onAvanzamento) {
     modello: config.modelloLocale,
     dispositivo,
     cdn: config.cdnTransformers || CDN_TRANSFORMERS,
-    dtype: dispositivo === 'webgpu' ? 'q4' : 'q8',
+    dtype: stato.dtype,
   });
 
   return stato.promessa;
 }
 
-/** Invia una finestra audio (≤30 s) al worker e attende il risultato. */
-function trascriviFinestraLocale(audioFloat32, config) {
+/**
+ * Carica il modello locale. Se WebGPU non è utilizzabile (driver, memoria,
+ * pesi non supportati) si passa automaticamente a WASM: l'app funziona sempre.
+ */
+async function caricaModelloLocale(config, onAvanzamento) {
+  const richiesto = scegliDispositivo(config.dispositivo);
+
+  try {
+    const esito = await caricaModelloSuDispositivo(config, richiesto, onAvanzamento);
+    return Object.assign({ fallback: false }, esito);
+  } catch (errore) {
+    if (richiesto !== 'webgpu') throw errore;
+    if (typeof onAvanzamento === 'function') {
+      onAvanzamento({ file: '', stato: 'fallback', percento: null });
+    }
+    const esito = await caricaModelloSuDispositivo(config, 'wasm', onAvanzamento);
+    return Object.assign({ fallback: true, motivoWebgpu: errore.message }, esito);
+  }
+}
+
+/** Invia un blocco audio al worker e attende il risultato. */
+function trascriviBloccoLocale(audioFloat32, config) {
   return new Promise((risolvi, rifiuta) => {
     if (lavoroLocaleInCorso) {
       rifiuta(new Error('Una trascrizione locale è già in corso.'));
@@ -1301,12 +1371,21 @@ async function preparaAudioLocale(file) {
  */
 async function eseguiTrascrizioneLocale(file, config, richiami = {}) {
   const segnala = richiami.onProgresso || (() => {});
+  const registra = richiami.onLog || (() => {});
 
   segnala({ fase: 'preparazione', percento: 1, messaggio: "Lettura e conversione dell'audio…" });
   const audio = await preparaAudioLocale(file);
 
   segnala({ fase: 'modello', percento: 3, messaggio: 'Preparazione del motore locale…' });
-  const dispositivo = await caricaModelloLocale(config, (avanzamento) => {
+  const motore = await caricaModelloLocale(config, (avanzamento) => {
+    if (avanzamento.stato === 'fallback') {
+      segnala({
+        fase: 'modello',
+        percento: 3,
+        messaggio: 'WebGPU non disponibile: passo automaticamente all\'elaborazione WASM…',
+      });
+      return;
+    }
     const nome = avanzamento.file ? avanzamento.file.split('/').pop() : 'modello';
     segnala({
       fase: 'modello',
@@ -1317,61 +1396,95 @@ async function eseguiTrascrizioneLocale(file, config, richiami = {}) {
     });
   });
 
-  const finestre = finestreAudio(audio.campioni, FREQUENZA_TARGET, config.secondiFinestra);
-  if (finestre.length === 0) throw new Error('Il file non contiene audio da trascrivere.');
+  registra(`Motore: ${config.modelloLocale} su ${String(motore.dispositivo).toUpperCase()}`
+    + (motore.fallback ? ' (WebGPU non disponibile)' : ''));
+
+  const blocchi = blocchiAudio(audio.campioni, FREQUENZA_TARGET, config.secondiBlocco);
+  if (blocchi.length === 0) throw new Error('Il file non contiene audio da trascrivere.');
 
   const testi = [];
   const segmenti = [];
   let secondiImpiegati = 0;
+  let secondiTrascritti = 0;
+  let blocchiSaltati = 0;
 
-  for (const finestra of finestre) {
+  for (const blocco of blocchi) {
+    // I tratti completamente silenziosi vengono saltati: Whisper tende a
+    // inventare testo quando non c'è parlato.
+    if (rmsAudio(blocco.campioni) < SOGLIA_SILENZIO) {
+      blocchiSaltati += 1;
+      registra(`Blocco ${blocco.indice + 1}: silenzio, saltato`);
+      segnala({
+        fase: 'trascrizione',
+        percento: 15 + Math.round(((blocco.indice + 1) / blocchi.length) * 80),
+        totale: blocchi.length,
+        completati: blocco.indice + 1,
+        messaggio: `Blocco ${blocco.indice + 1} di ${blocchi.length}: nessun parlato, saltato`,
+      });
+      continue;
+    }
+
     const inizio = performance.now();
     segnala({
       fase: 'trascrizione',
-      percento: 15 + Math.round((finestra.indice / finestre.length) * 80),
-      totale: finestre.length,
-      completati: finestra.indice,
-      messaggio: `Elaborazione della finestra ${finestra.indice + 1} di ${finestre.length} (da ${formattaBreve(finestra.inizioSecondi)})…`,
+      percento: 15 + Math.round((blocco.indice / blocchi.length) * 80),
+      totale: blocchi.length,
+      completati: blocco.indice,
+      messaggio: `Elaborazione del blocco ${blocco.indice + 1} di ${blocchi.length} (da ${formattaBreve(blocco.inizioSecondi)})…`,
     });
 
-    const risultato = await trascriviFinestraLocale(float32DaInt16(finestra.campioni), config);
+    const risultato = await trascriviBloccoLocale(float32DaInt16(blocco.campioni), config);
     const testo = String(risultato.testo || '').trim();
     if (testo) testi.push(testo);
 
-    for (const blocco of risultato.blocchi || []) {
-      const contenuto = String(blocco.testo || '').trim();
+    for (const parte of risultato.blocchi || []) {
+      const contenuto = String(parte.testo || '').trim();
       if (!contenuto) continue;
-      const da = Number(blocco.inizio || 0);
-      const a = blocco.fine === null || blocco.fine === undefined ? da : Number(blocco.fine);
+      const da = Number(parte.inizio || 0);
+      const a = parte.fine === null || parte.fine === undefined ? da : Number(parte.fine);
       segmenti.push({
-        inizio: finestra.inizioSecondi + da,
-        fine: finestra.inizioSecondi + a,
+        inizio: blocco.inizioSecondi + da,
+        fine: blocco.inizioSecondi + a,
         testo: contenuto,
       });
     }
 
     const durata = (performance.now() - inizio) / 1000;
     secondiImpiegati += durata;
-    const rimanenti = Math.max(0, finestre.length - finestra.indice - 1);
+    secondiTrascritti += blocco.durataSecondi;
+    const rimanenti = Math.max(0, blocchi.length - blocco.indice - 1);
     segnala({
       fase: 'trascrizione',
-      percento: 15 + Math.round(((finestra.indice + 1) / finestre.length) * 80),
-      totale: finestre.length,
-      completati: finestra.indice + 1,
+      percento: 15 + Math.round(((blocco.indice + 1) / blocchi.length) * 80),
+      totale: blocchi.length,
+      completati: blocco.indice + 1,
       secondiSegmento: Number(durata.toFixed(1)),
-      secondiStimati: Math.round((secondiImpiegati / (finestra.indice + 1)) * rimanenti),
-      messaggio: `Finestra ${finestra.indice + 1} di ${finestre.length} completata in ${durata.toFixed(1)} s`,
+      secondiStimati: Math.round((secondiImpiegati / (blocco.indice + 1)) * rimanenti),
+      messaggio: `Blocco ${blocco.indice + 1} di ${blocchi.length} completato in ${durata.toFixed(1)} s`,
     });
   }
+
+  const fattoreVelocita = secondiImpiegati > 0 && secondiTrascritti > 0
+    ? Number((secondiTrascritti / secondiImpiegati).toFixed(2))
+    : null;
+
+  if (fattoreVelocita) {
+    registra(`Velocità: ${secondiTrascritti.toFixed(1)} s di audio in ${secondiImpiegati.toFixed(1)} s `
+      + `(${fattoreVelocita.toFixed(1)}× il tempo reale)`);
+  }
+  if (blocchiSaltati) registra(`Blocchi silenziosi saltati: ${blocchiSaltati}`);
 
   return {
     versione: VERSIONE,
     motore: 'locale',
     strategia: 'locale',
-    dispositivo: dispositivo.dispositivo,
+    dispositivo: motore.dispositivo,
+    webgpuNonDisponibile: Boolean(motore.fallback),
+    fattoreVelocita,
+    blocchiSaltati,
     durata: audio.durata,
-    durataSegmento: audio.durata / finestre.length,
-    segmentiTotali: finestre.length,
+    durataSegmento: audio.durata / blocchi.length,
+    segmentiTotali: blocchi.length,
     testo: testi.join(' ').trim(),
     segmenti,
     srt: segmenti.length ? costruisciSrt(segmenti) : '',
@@ -1391,9 +1504,9 @@ async function eseguiTrascrizioneLocale(file, config, richiami = {}) {
 
 const CONFIG_PREDEFINITA = {
   motore: 'api',
-  modelloLocale: 'Xenova/whisper-base',
+  modelloLocale: 'Xenova/whisper-small',
   dispositivo: 'auto',
-  secondiFinestra: 30,
+  secondiBlocco: 300,
   chiave: '',
   endpoint: 'https://api.openai.com/v1',
   modello: 'whisper-1',
@@ -1454,7 +1567,7 @@ function avviaApp() {
   const el = {
     motore: per('motore'), notaMotore: per('notaMotore'),
     gruppoApi: per('gruppoApi'), gruppoLocale: per('gruppoLocale'),
-    modelloLocale: per('modelloLocale'), dispositivo: per('dispositivo'), secondiFinestra: per('secondiFinestra'),
+    modelloLocale: per('modelloLocale'), dispositivo: per('dispositivo'), secondiBlocco: per('secondiBlocco'),
     rigaContinuita: per('rigaContinuita'), rigaSalvaChiave: per('rigaSalvaChiave'),
     rigaAvanzateApi: per('rigaAvanzateApi'), notaPrivacyApi: per('notaPrivacyApi'),
     chiave: per('chiave'), endpoint: per('endpoint'), modello: per('modello'), lingua: per('lingua'),
@@ -1491,7 +1604,7 @@ function avviaApp() {
     el.motore.value = config.motore;
     el.modelloLocale.value = config.modelloLocale;
     el.dispositivo.value = config.dispositivo;
-    el.secondiFinestra.value = config.secondiFinestra;
+    el.secondiBlocco.value = config.secondiBlocco;
     el.chiave.value = config.chiave;
     el.endpoint.value = config.endpoint;
     el.modello.value = config.modello;
@@ -1509,7 +1622,7 @@ function avviaApp() {
       motore: el.motore.value,
       modelloLocale: el.modelloLocale.value,
       dispositivo: el.dispositivo.value,
-      secondiFinestra: Math.max(5, Math.min(30, Number(el.secondiFinestra.value) || 30)),
+      secondiBlocco: Math.max(30, Math.min(900, Number(el.secondiBlocco.value) || BLOCCO_LOCALE_S)),
       cdnTransformers: CDN_TRANSFORMERS,
       chiave: el.chiave.value.trim(),
       endpoint: el.endpoint.value.trim(),
@@ -1678,8 +1791,13 @@ function avviaApp() {
     meta.push(`modello ${risultato.modello}`);
     meta.push(`${risultato.testo.split(/\s+/).filter(Boolean).length} parole`);
     if (risultato.costoStimato !== null) meta.push(`costo stimato ~$${risultato.costoStimato.toFixed(4)}`);
+    if (risultato.fattoreVelocita) meta.push(`${risultato.fattoreVelocita.toFixed(1)}× il tempo reale`);
     meta.push(`elaborato in ${risultato.secondiImpiegati} s`);
     el.meta.textContent = meta.join(' · ');
+
+    if (risultato.motore === 'locale' && risultato.webgpuNonDisponibile) {
+      aggiornaRegistro('Nota: WebGPU non era disponibile, la trascrizione è stata eseguita con WASM (più lenta).');
+    }
 
     el.btnSrt.classList.toggle('hidden', !risultato.srt);
     el.risultato.classList.remove('hidden');
@@ -1717,6 +1835,7 @@ function avviaApp() {
       const esegui = config.motore === 'locale' ? eseguiTrascrizioneLocale : eseguiTrascrizione;
       const risultato = await esegui(fileCorrente, config, {
         onProgresso: aggiornaProgresso,
+        onLog: aggiornaRegistro,
         signal: annullatore.signal,
       });
       risultatoCorrente = risultato;
@@ -1827,11 +1946,13 @@ window.TrascrizioneAudio = {
   // motore locale (nessuna API)
   MODELLI_LOCALI,
   LINGUE_WHISPER,
-  FINESTRA_LOCALE_S,
+  BLOCCO_LOCALE_S,
+  SOGLIA_SILENZIO,
   CDN_TRANSFORMERS,
   nomeLinguaWhisper,
   float32DaInt16,
-  finestreAudio,
+  blocchiAudio,
+  rmsAudio,
   richiedeChiave,
   scegliDispositivo,
   preparaAudioLocale,

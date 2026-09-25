@@ -52,16 +52,25 @@ Nel menu **Motore** scegli *Locale nel browser*: non serve alcuna chiave. La pri
 volta il browser scarica il modello (resta nella cache, quindi poi funziona anche
 **offline**) e la trascrizione avviene sul tuo computer.
 
-| Modello | Download | Velocità (WASM) | Qualità |
+| Modello | Download | Velocità (WASM) | Errore parola misurato* |
 |---|---|---|---|
-| `whisper-tiny` | ~38 MB | molto veloce | sufficiente per parlato chiaro |
-| `whisper-base` | ~73 MB | veloce | buona (**predefinito**) |
-| `whisper-small` | ~237 MB | media | molto buona |
+| `whisper-tiny` | ~38 MB | molto veloce | alto (sconsigliato per l'italiano) |
+| `whisper-base` | ~73 MB | ~6× il tempo reale | ~17% |
+| `whisper-small` | ~237 MB | ~1,8× il tempo reale | **~14%** (predefinito) |
 
-* Con **WebGPU** (Chrome/Edge recenti) l'elaborazione è parecchie volte più veloce;
-  l'app lo seleziona da sola, altrimenti usa **WASM** (compatibile con tutti i browser).
-* L'audio viene elaborato a finestre di 30 secondi (il massimo che Whisper gestisce
-  per contesto) e i timestamp vengono ricomposti con offset cumulativi.
+\* misurato su un audio italiano sintetico di 41,8 s con la strategia a blocchi
+(parte dell'errore è solo formattazione dei numeri: `1992` invece di "mille
+novecento novanta due").
+
+* Con **WebGPU** (Chrome/Edge recenti) l'elaborazione è diverse volte più veloce;
+  l'app lo usa in automatico e, se non è disponibile o dà errore, **ripassa da sola
+  a WASM** avvisandoti nel registro.
+* L'audio viene elaborato in **blocchi** (5 minuti per impostazione predefinita) e
+  dentro ogni blocco il modello lavora a finestre di 30 s **con sovrapposizione e
+  contesto condiviso**: così non si perdono parole ai confini (vedi la sezione
+  "Correzioni" qui sotto, dove questo problema è documentato con le misure).
+* I blocchi **completamente silenziosi vengono saltati**: Whisper, quando non c'è
+  parlato, tende a inventare testo.
 * Nessun limite di 25 MB: il file resta dov'è, nel tuo computer.
 
 ### Modo B — server locale con whisper.cpp (qualità massima, offline)
@@ -151,6 +160,33 @@ e consiglia di convertire in MP3/WAV se il file è molto lungo.
 > 16 kHz mono e passato al modello a finestre di 30 secondi (una alla volta), quindi
 > non esiste alcun limite di 25 MB né di durata.
 
+## 🐛 Correzioni dopo i primi utilizzi reali
+
+Gli utilizzi su audio veri hanno evidenziato — e i test ora coprono — **due
+problemi seri nel motore locale**, entrambi risolti:
+
+1. **Testo perso ai confini delle finestre** (qualità). L'app elaborava blocchi da
+   30 s indipendenti, senza contesto: su un audio italiano di 41,8 s un'intera frase
+   spariva e un altro pezzo veniva inventato. Misure con lo stesso modello:
+
+   | Strategia | Errore parola (WER) | Testo |
+   |---|---|---|
+   | Finestre da 30 s senza contesto (versione precedente) | 24,4% | frase mancante |
+   | Blocchi con sovrapposizione e contesto (versione attuale) | **6,0–16,8%** | completo |
+
+   Ora si usa il meccanismo *long-form* della libreria (`chunk_length_s: 30`,
+   `stride_length_s: 5`), che si porta avanti il contesto del testo precedente.
+
+2. **Blocco silenzioso senza messaggi** (robustezza). Se il caricamento del modello
+   falliva (per esempio WebGPU non utilizzabile), l'errore non era collegato alla
+   richiesta in corso: l'app restava "in elaborazione" all'infinito. Ora l'errore
+   viene mostrato, e se il problema è WebGPU si passa automaticamente a WASM.
+
+Inoltre il **test suite ora controlla la qualità**: oltre a verificare che il testo
+non sia vuoto, calcola l'errore parola (WER) su un audio italiano reale e pretende
+che alcune **frasi chiave** (inizio, centro e fine) siano presenti per intero. È
+esattamente il controllo che mancava quando il testo veniva perso.
+
 ## 🔒 Note su sicurezza e privacy
 
 * La chiave resta nel browser: **non** viene inviata a nessun server diverso da
@@ -175,13 +211,15 @@ e consiglia di convertire in MP3/WAV se il file è molto lungo.
 
 ```bash
 npm install            # solo puppeteer-core, per i test nel browser
-npm test               # 120 verifiche unitarie + 53 in Chrome + 14 sul server locale
+npm test               # 126 verifiche unitarie + 53 in Chrome + 14 sul server locale
+                       # (67 in Chrome quando si include il motore locale)
 npm run test:unit      # il motore estratto da index.html, eseguito in Node
 npm run test:browser   # Chrome headless che apre il file da file://
 npm run test:locale-server   # whisper.cpp: trascrizione reale, senza API
 
-# motore locale nel browser incluso nei test (scarica il modello una volta):
-TEST_LOCALE=1 npm run test:browser
+# motore locale nel browser incluso nei test (scarica il modello, poi lo tiene in cache):
+PROFILO_BROWSER=/tmp/profilo-test TEST_LOCALE=1 npm run test:browser
+TEST_LOCALE_MODELLO=Xenova/whisper-base PROFILO_BROWSER=... TEST_LOCALE=1 npm run test:browser
 
 # verifica della versione pubblicata su GitHub Pages:
 PAGINA_URL=https://alessandro1040.github.io/trascrizione-audio-standalone/ node test/browser.js
@@ -191,7 +229,9 @@ I test **non usano la rete**: `fetch` viene sostituito da uno stub che risponde 
 Whisper e gli audio di prova sono generati con FFmpeg. Per il motore locale e per
 whisper.cpp vengono usate frasi **italiane reali**, sintetizzate con il comando
 `say` di macOS, e si verifica che il testo prodotto contenga le parole attese —
-senza chiave API e senza costi.
+senza chiave API e senza costi. Il test del motore locale calcola anche l'**errore
+parola (WER)** e pretende che quattro frasi chiave (inizio, centro, fine) compaiano
+per intero: è il controllo che mancava quando l'app perdeva testo ai confini.
 
 Durante lo sviluppo i test hanno individuato tre bug reali, tutti corretti:
 
@@ -208,11 +248,14 @@ Durante lo sviluppo i test hanno individuato tre bug reali, tutti corretti:
 
 | Campo | Default | Note |
 |---|---|---|
-| `Secondi per segmento` | 600 | durata massima di ogni segmento (meno, se si supera il limite di MB) |
+| `Secondi per segmento` | 600 | durata massima di ogni segmento inviato all'API (meno, se si supera il limite di MB) |
 | `Limite MB per segmento` | 20 | margine di sicurezza rispetto ai 25 MB dell'API (minimo 0,05 MB) |
 | `Formato risposta` | `verbose_json` | necessario per i timestamp; `json` restituisce solo il testo |
-| `Endpoint API` | `https://api.openai.com/v1` | qualsiasi servizio compatibile OpenAI |
+| `Endpoint API` | `https://api.openai.com/v1` | qualsiasi servizio compatibile OpenAI (per `localhost` la chiave non serve) |
 | `Modello` | `whisper-1` | modificabile (es. un modello self-hosted) |
+| `Blocco audio locale` | 300 s | quanto audio elaborare per volta con il motore locale; blocchi più corti danno progresso più fine |
+| `Modello locale` | `Xenova/whisper-small` | `tiny`/`base` più veloci ma meno precisi |
+| `Elaborazione` | Auto | WebGPU se disponibile, altrimenti (o in caso di errore) WASM |
 
 ## 🌐 Pubblicare su GitHub Pages
 

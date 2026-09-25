@@ -128,6 +128,9 @@ async function caricaPagina(opzioni = {}) {
 
   await pagina.goto(PAGINA, { waitUntil: 'domcontentloaded' });
   await pagina.waitForSelector('#btnAvvia');
+  // Profilo persistente (facoltativo): si azzera la configurazione salvata per
+  // partire sempre dagli stessi valori.
+  await pagina.evaluate(() => { try { window.localStorage.removeItem('trascrizioneAudioStandalone.v1'); } catch (ignorato) { /* niente */ } });
 
   await pagina.$eval('#chiave', (el) => { el.value = 'sk-chiave-di-test'; });
   await pagina.$eval('#endpoint', (el) => { el.value = 'https://endpoint.finto/v1'; });
@@ -348,9 +351,51 @@ function generaVoce(percorsoWav, testo) {
   return true;
 }
 
+/** Normalizza il testo per il confronto (minuscole, senza punteggiatura). */
+const normalizzaTesto = (testo) => String(testo || '')
+  .toLowerCase()
+  .replace(/[^a-zàèéìòùü\s]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+/** Errore parola (WER) = distanza di Levenshtein fra le parole. */
+function calcolaWer(riferimento, ipotesi) {
+  const attese = normalizzaTesto(riferimento).split(' ').filter(Boolean);
+  const ottenute = normalizzaTesto(ipotesi).split(' ').filter(Boolean);
+  if (attese.length === 0) return 0;
+
+  let precedente = new Array(ottenute.length + 1).fill(0).map((_, i) => i);
+  for (let i = 1; i <= attese.length; i += 1) {
+    const corrente = [i];
+    for (let j = 1; j <= ottenute.length; j += 1) {
+      corrente[j] = Math.min(
+        precedente[j] + 1,
+        corrente[j - 1] + 1,
+        precedente[j - 1] + (attese[i - 1] === ottenute[j - 1] ? 0 : 1)
+      );
+    }
+    precedente = corrente;
+  }
+  return precedente[ottenute.length] / attese.length;
+}
+
 /* ------------------------------------------------------------------ */
 /* Motore locale (nessuna API)                                         */
 /* ------------------------------------------------------------------ */
+
+const TESTO_VOCE = 'Buongiorno a tutti e benvenuti a questa prova di trascrizione automatica. '
+  + 'La riunione di giovedì è stata rinviata perché servono ancora alcune verifiche tecniche. '
+  + 'Nel frattempo abbiamo pubblicato il nuovo documento con tutte le istruzioni aggiornate per la configurazione del sistema. '
+  + 'Vi ricordo che i dati vengono trattati in modo conforme al regolamento europeo sulla protezione dei dati personali. '
+  + 'Grazie per l\'attenzione e alla prossima settimana.';
+
+/** Frasi che devono comparire per intero: coprono inizio, centro e fine audio. */
+const ANCORE_VOCE = [
+  /benvenuti a questa prova/i,
+  /riunione di gioved/i,
+  /protezione dei dati personali/i,
+  /alla prossima settimana/i,
+];
 
 async function scenarioLocale(voce, modello) {
   console.log(`\n7) Motore locale nel browser — modello ${modello} (nessuna API)`);
@@ -360,6 +405,7 @@ async function scenarioLocale(voce, modello) {
   await pagina.$eval('#dispositivo', (el) => { el.value = 'wasm'; });
   await pagina.$eval('#lingua', (el) => { el.value = 'it'; });
   await pagina.$eval('#timestamp', (el) => { el.checked = true; });
+  await pagina.$eval('#secondiBlocco', (el) => { el.value = '30'; });   // verifica anche i confini fra blocchi
 
   const campi = await pagina.evaluate(() => ({
     apiNascosto: document.getElementById('gruppoApi').classList.contains('hidden'),
@@ -397,11 +443,24 @@ async function scenarioLocale(voce, modello) {
 
   console.log(`      testo prodotto dal modello locale: «${esito.testo.trim()}»`);
 
+  const wer = calcolaWer(TESTO_VOCE, esito.testo);
+  console.log(`      errore parola (WER): ${(wer * 100).toFixed(1)}%`);
+
   verifica('nessun errore dal motore locale', esito.errore === '', esito.errore);
   verifica('nessuna chiamata di rete effettuata', esito.richiesteApi === 0, `richieste: ${esito.richiesteApi}`);
   verifica('trascrizione non vuota', esito.testo.trim().length > 10, esito.testo);
-  verifica('contiene la parola "trascrizione"', /trascrizion/i.test(esito.testo), esito.testo);
+  verifica(
+    'qualità del testo sufficiente (WER < 25%)',
+    wer < 0.25,
+    `WER ${(wer * 100).toFixed(1)}% — testo: ${esito.testo}`
+  );
+  verifica(
+    'nessuna frase persa ai confini fra blocchi',
+    ANCORE_VOCE.every((ancora) => ancora.test(esito.testo)),
+    `ancore mancanti: ${ANCORE_VOCE.filter((a) => !a.test(esito.testo)).join(', ')} — testo: ${esito.testo}`
+  );
   verifica('riepilogo con motore locale', /motore locale/.test(esito.meta), esito.meta);
+  verifica('velocità dichiarata nel riepilogo', /tempo reale/.test(esito.meta), esito.meta);
   verifica('barra di avanzamento completata', esito.barra === '95%', esito.barra);
   verifica('pulsante .srt disponibile', esito.srtVisibile === true);
 }
@@ -443,10 +502,7 @@ async function scenarioLocale(voce, modello) {
   generaAudio(lungo, 25, ['-ac', '2', '-ar', '44100', '-acodec', 'pcm_s16le']);
   generaAudio(lungoMp3, 25, ['-ac', '1', '-ar', '44100', '-b:a', '128k']);
   generaAudio(lungoM4a, 25, ['-ac', '1', '-ar', '44100', '-c:a', 'aac', '-b:a', '64k']);
-  const voceDisponibile = generaVoce(
-    voce,
-    'Ciao, questa è una prova di trascrizione automatica con il modello locale.'
-  );
+  const voceDisponibile = generaVoce(voce, TESTO_VOCE);
   console.log(`Fixture: breve.wav ${fs.statSync(breve).size} B · lungo.wav ${fs.statSync(lungo).size} B`
     + ` · lungo.mp3 ${fs.statSync(lungoMp3).size} B · lungo.m4a ${fs.statSync(lungoM4a).size} B`
     + (voceDisponibile ? ` · voce-italiana.wav ${fs.statSync(voce).size} B` : ' · (voce sintetica non disponibile)'));
@@ -454,6 +510,8 @@ async function scenarioLocale(voce, modello) {
   browser = await puppeteer.launch({
     executablePath: chrome,
     headless: true,
+    // Con PROFILO_BROWSER i modelli locali restano in cache fra un'esecuzione e l'altra
+    userDataDir: process.env.PROFILO_BROWSER || undefined,
     args: ['--no-first-run', '--no-default-browser-check', '--mute-audio', '--autoplay-policy=no-user-gesture-required'],
   });
 
@@ -467,7 +525,7 @@ async function scenarioLocale(voce, modello) {
 
     if (process.env.TEST_LOCALE === '1') {
       if (voceDisponibile) {
-        await scenarioLocale(voce, process.env.TEST_LOCALE_MODELLO || 'Xenova/whisper-tiny');
+        await scenarioLocale(voce, process.env.TEST_LOCALE_MODELLO || 'Xenova/whisper-small');
       } else {
         console.log('\n7) Motore locale: saltato (voce italiana sintetica non disponibile)');
       }

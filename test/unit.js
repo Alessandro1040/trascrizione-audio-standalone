@@ -411,6 +411,11 @@ async function testPipeline(sandbox, M) {
   );
   verificaUguale('blocchi SRT = 2 per segmento', blocchiSrt(esito2.srt).length, registroWav.length * 2);
   verifica(
+    'lingua riconosciuta imposta ai segmenti successivi',
+    registroWav[0].lingua === null && registroWav.slice(1).every((r) => r.lingua === 'it'),
+    registroWav.map((r) => r.lingua).join(', ')
+  );
+  verifica(
     'timestamp cumulativi fra i segmenti',
     secondiDaSubRip(blocchiSrt(esito2.srt)[2].split('\n')[1]) > 2,
     blocchiSrt(esito2.srt)[2]
@@ -492,16 +497,23 @@ function testMotoreLocale(M) {
   verificaVicino('conversione a Float32 (metà)', float[3], 0.5, 0.0001);
 
   const campioni = new Int16Array(M.FREQUENZA_TARGET * 65);   // 65 secondi
-  const finestre = M.finestreAudio(campioni, M.FREQUENZA_TARGET, 30);
-  verificaUguale('finestre da 30 s (65 s → 3 finestre)', finestre.length, 3);
-  verificaUguale('inizio della prima finestra', finestre[0].inizioSecondi, 0);
-  verificaUguale('inizio della seconda finestra', finestre[1].inizioSecondi, 30);
-  verificaVicino('durata della prima finestra', finestre[0].durataSecondi, 30, 0.0001);
-  verificaVicino('durata dell\'ultima finestra', finestre[2].durataSecondi, 5, 0.0001);
-  verifica('finestre indicizzate', finestre.every((f, i) => f.indice === i));
+  const blocchi = M.blocchiAudio(campioni, M.FREQUENZA_TARGET, 30);
+  verificaUguale('blocchi da 30 s (65 s → 3 blocchi)', blocchi.length, 3);
+  verificaUguale('inizio del primo blocco', blocchi[0].inizioSecondi, 0);
+  verificaUguale('inizio del secondo blocco', blocchi[1].inizioSecondi, 30);
+  verificaVicino('durata del primo blocco', blocchi[0].durataSecondi, 30, 0.0001);
+  verificaVicino('durata dell\'ultimo blocco', blocchi[2].durataSecondi, 5, 0.0001);
+  verifica('blocchi indicizzati', blocchi.every((b, i) => b.indice === i));
+  verificaUguale('blocco minimo 30 s', M.blocchiAudio(campioni, M.FREQUENZA_TARGET, 5)[1].inizioSecondi, 30);
+  verificaUguale('blocco massimo 900 s', M.blocchiAudio(campioni, M.FREQUENZA_TARGET, 5000)[0].durataSecondi, 65);
+  verificaUguale('blocco predefinito da 5 minuti', M.blocchiAudio(new Int16Array(M.FREQUENZA_TARGET * 601))[1].inizioSecondi, 300);
 
-  verificaUguale('finestra minima 5 s', M.finestreAudio(campioni, M.FREQUENZA_TARGET, 1)[1].inizioSecondi, 5);
-  verificaUguale('finestra massima 30 s', M.finestreAudio(campioni, M.FREQUENZA_TARGET, 90)[1].inizioSecondi, 30);
+  // Energia: serve a saltare i tratti silenziosi (Whisper ci inventa testo)
+  verificaUguale('silenzio totale → RMS zero', M.rmsAudio(new Int16Array(16000)), 0);
+  const mezzo = new Int16Array(16000).fill(16384);
+  verificaVicino('segnale a metà scala → RMS 0,5', M.rmsAudio(mezzo), 0.5, 0.01);
+  verifica('segnale debole sotto la soglia', M.rmsAudio(new Int16Array(16000).fill(20)) < M.SOGLIA_SILENZIO);
+  verifica('parlato normale sopra la soglia', M.rmsAudio(new Int16Array(16000).fill(1638)) > M.SOGLIA_SILENZIO);
 
   verificaUguale('nome lingua per Whisper', M.nomeLinguaWhisper('it'), 'italian');
   verificaUguale('lingua automatica non forzata', M.nomeLinguaWhisper('auto'), null);
