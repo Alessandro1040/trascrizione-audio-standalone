@@ -102,6 +102,9 @@ npm install            # solo puppeteer-core, per i test nel browser
 npm test               # 89 verifiche unitarie + 53 verifiche in Chrome headless
 npm run test:unit      # il motore estratto da index.html, eseguito in Node
 npm run test:browser   # Chrome headless che apre il file da file://
+
+# verifica della versione pubblicata su GitHub Pages:
+PAGINA_URL=https://alessandro1040.github.io/trascrizione-audio-standalone/ node test/browser.js
 ```
 
 I test **non usano la rete**: `fetch` viene sostituito da uno stub che risponde come

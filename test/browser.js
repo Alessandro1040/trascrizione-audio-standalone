@@ -17,7 +17,9 @@ const { execFileSync, spawnSync } = require('child_process');
 
 const RADICE = path.join(__dirname, '..');
 const TEMP = path.join(__dirname, 'tmp');
-const PAGINA = `file://${path.join(RADICE, 'index.html')}`;
+/* Per impostazione predefinita si testa il file locale aperto da file://
+   (lo scenario "scarico e apro"); con PAGINA_URL si testa una pagina online. */
+const PAGINA = process.env.PAGINA_URL || `file://${path.join(RADICE, 'index.html')}`;
 
 let superati = 0;
 let falliti = 0;
